@@ -3417,60 +3417,121 @@ def _render_globale_regeln(j: dict, m: dict):
         st.markdown("---")
         ca, cb, cc = st.columns(3)
 
+        # ── Alle 30 KLASSE A Regeln (vollständig nach JACK-Spec) ─────────────
+        # Format: (nr, name, detail, status) — status: ✅ impl / ⚠️ partial / 🚧 display-only
+        _rules_a = [
+            ( 1, "TAG-PFLICHT",           "S1/S2/S3/S4/LIVE/N/V bei jeder Kennzahl",                    "✅"),
+            ( 2, "LIVE-INTEGRITÄT",       "Nur mit Web-Search + URL — Fake-LIVE = Regelverstoß",         "✅"),
+            ( 3, "VERIFIED-SCHWELLE",     "≥2 Quellen · ≤10% · 10–20% = DISKREPANZ · >20% = N/V",       "✅"),
+            ( 4, "SCHÄTZ-DOKTRIN",        "K: ESTIMATE verboten · E: erlaubt mit −20% Malus + 🟡",       "⚠️"),
+            ( 5, "ABBRUCH-LOGIK",         "Einzige Quelle = DNA-CHECK Abbruch-Block",                    "✅"),
+            ( 6, "K-BASIS-PFLICHT",       "Vor DNA-Check festlegen + im Header ausweisen",               "✅"),
+            ( 7, "KONFIDENZ-PFLICHT",     "🟢/🟡/🔴 Pflicht-Output jeder Analyse",                       "✅"),
+            ( 8, "🔴-REGELUNG",           "Tier 1/2 verboten · Score max 6 · EDGE-Deckel aktiv",         "✅"),
+            ( 9, "WACC-PFLICHT",          "Dynamisch + WACC-BREAKDOWN Pflicht-Output",                   "✅"),
+            (10, "PRIORITÄTEN-LOGIK",     "① DNA ② Valuation (Datenlage) ③ Rest Best Effort",           "✅"),
+            (11, "REVERSE-DCF-ROLLE",     "Primär bei lückenhaft/Talsohle/neg.FCF · Sanity bei stabil",  "✅"),
+            (12, "EXIT-PFLICHT",          "Kein KAUFEN ohne Exit-Strategie",                             "✅"),
+            (13, "BEOBACHTEN-PFLICHT",    "Kein BEOBACHTEN ohne Abstauber-Limit + Trigger",              "✅"),
+            (14, "BATTLE-VALUATION",      "Standard = QUICK CHECK · DCF-Kurz wenn beide S1",             "✅"),
+            (15, "BATTLE-BASIS-WARNUNG",  "Unterschiedl. K-BASIS → Normalisierung als % Pflicht",        "⚠️"),
+            (16, "FX-PFLICHT",            "Nicht-EUR → EUR-FV + FX-Impact ausweisen",                    "✅"),
+            (17, "PREISE",                "Immer live abrufen — kein Trainingspreis als Basis",           "✅"),
+            (18, "DATENALTER",            ">1 Quartal → ⚠️ VERALTET-Warnung aktiv",                      "✅"),
+            (19, "THESE-DISZIPLIN",       "Kurs fällt ≠ These kaputt — strukturell prüfen",              "✅"),
+            (20, "RECHEN-DOKTRIN",        "Python: Variablen → Zwischenschritte → Ergebnis",             "✅"),
+            (21, "REAPER SCORE",          "Qualitätsurteil + Anker + 1-Satz-Treiber · Max 6 bei 🔴",     "✅"),
+            (22, "BATTLE-VORFILTER",      "K-Check inkl. K-BASIS vor Battle-Vergleich",                  "✅"),
+            (23, "KURSPFLICHT C/D",       "Live abrufen — Fehlschlag → max ⚠️ WACKELT",                  "✅"),
+            (24, "TIEFE-PFLICHT",         "Jede Analyse mit Tiefe-Auswahl starten",                      "✅"),
+            (25, "TV-WARNUNG",            "Terminal Value > 70% EV → Pflicht-Hinweis",                   "✅"),
+            (26, "BENEISH-INTEGRITÄT",    "Nur [LIVE] · Sonst SKIP · Kein Abzug",                        "✅"),
+            (27, "DCF g-BASIS-PFLICHT",   "g = FCF-CAGR(5J) × 0.8 · Fallback: Rev-CAGR",               "⚠️"),
+            (28, "SAAS-OVERRIDE",         "NRR als K-Kriterium bei ARR-Modellen · N/V = Abbruch",        "⚠️"),
+            (29, "DEBT-MATURITY-PFLICHT", "Schritt 4 immer vollständig · 🔴 → −10% FV-Malus",           "✅"),
+            (30, "TRANSFORMATION",        "FCF-Override nur nach 3-Punkte-Qualifikation · max Tier 3",   "✅"),
+        ]
+
+        # Split into two columns for compact display
+        half = len(_rules_a) // 2 + len(_rules_a) % 2
+        left_rules  = _rules_a[:half]
+        right_rules = _rules_a[half:]
+
         with ca:
             st.markdown(
                 '<div style="background:#3fb95022;border:1px solid #3fb950;border-radius:6px;'
-                'padding:8px 12px;margin-bottom:6px;">'
+                'padding:8px 12px;margin-bottom:8px;">'
                 '<span style="color:#3fb950;font-weight:700;font-size:0.85em;">'
-                '🔒 KLASSE A — EISERN (nie brechen)</span></div>',
+                '🔒 KLASSE A — EISERN (nie brechen)</span><br>'
+                '<span style="color:#8b949e;font-size:0.72em;">✅ implementiert · ⚠️ partial · 🚧 nur Anzeige</span>'
+                '</div>',
                 unsafe_allow_html=True)
-            for rule in [
-                ("[S1/S2/S3/S4/LIVE/N/V] bei jeder Kennzahl Pflicht", True),
-                ("[LIVE] nur mit Web-Search + URL — Fake-LIVE = Verstoß", True),
-                ("[S1] ≥ 2 Quellen · ≤ 10% Abweichung", True),
-                ("[S4/ESTIMATE] nur E-Kriterien & WACC — K: verboten", True),
-                ("K-Kriterium [N/V] → Sofort-Abbruch der Analyse", True),
-                ("Kein Wert ohne Quellenangabe", True),
-                ("Konfidenz 🟢/🟡/🔴 = Pflicht-Output jeder Analyse", True),
-                ("WACC dynamisch — kein fixer Wert", True),
-                ("FX-Pflicht bei nicht-EUR-Werten", True),
-                ("Kein KAUFEN Tier 1/2 bei 🔴 Konfidenz", True),
-                ("Kein KAUFEN ohne Exit-Strategie", True),
-                ("BEOBACHTEN: Abstauber-Limit + Trigger Pflicht", True),
-                ("KURS/NEWS-PFLICHT: Web-Search 72h vor Analyse", True),
-            ]:
-                txt, hard = rule
-                st.markdown(
-                    f'<div style="border-left:2px solid #3fb950;padding:2px 7px;margin:2px 0;">'
-                    f'<span style="color:#c9d1d9;font-size:0.75em;">• {txt}</span></div>',
-                    unsafe_allow_html=True)
+            rows = ""
+            for nr, name, detail, status in left_rules:
+                sc = "#3fb950" if status == "✅" else "#d29922" if status == "⚠️" else "#8b949e"
+                rows += (
+                    f'<tr>'
+                    f'<td style="color:#8b949e;font-size:0.7em;padding:3px 4px;text-align:right;">{nr}</td>'
+                    f'<td style="padding:3px 6px;">'
+                    f'<span style="color:{sc};font-size:0.7em;font-weight:700;">{status}</span></td>'
+                    f'<td style="color:#e6edf3;font-size:0.73em;font-weight:600;padding:3px 4px;">{name}</td>'
+                    f'<td style="color:#8b949e;font-size:0.7em;padding:3px 4px;">{detail}</td>'
+                    f'</tr>'
+                )
+            st.markdown(
+                f'<table style="width:100%;border-collapse:collapse;">'
+                f'<tbody>{rows}</tbody></table>',
+                unsafe_allow_html=True)
 
         with cb:
+            st.markdown(
+                '<div style="background:#3fb95022;border:1px solid #3fb950;border-radius:6px;'
+                'padding:8px 12px;margin-bottom:8px;">'
+                '<span style="color:#3fb950;font-weight:700;font-size:0.85em;">'
+                '🔒 KLASSE A — Fortsetzung (16–30)</span>'
+                '</div>',
+                unsafe_allow_html=True)
+            rows = ""
+            for nr, name, detail, status in right_rules:
+                sc = "#3fb950" if status == "✅" else "#d29922" if status == "⚠️" else "#8b949e"
+                rows += (
+                    f'<tr>'
+                    f'<td style="color:#8b949e;font-size:0.7em;padding:3px 4px;text-align:right;">{nr}</td>'
+                    f'<td style="padding:3px 6px;">'
+                    f'<span style="color:{sc};font-size:0.7em;font-weight:700;">{status}</span></td>'
+                    f'<td style="color:#e6edf3;font-size:0.73em;font-weight:600;padding:3px 4px;">{name}</td>'
+                    f'<td style="color:#8b949e;font-size:0.7em;padding:3px 4px;">{detail}</td>'
+                    f'</tr>'
+                )
+            st.markdown(
+                f'<table style="width:100%;border-collapse:collapse;">'
+                f'<tbody>{rows}</tbody></table>',
+                unsafe_allow_html=True)
+
+        with cc:
             st.markdown(
                 '<div style="background:#d2992222;border:1px solid #d29922;border-radius:6px;'
                 'padding:8px 12px;margin-bottom:6px;">'
                 '<span style="color:#d29922;font-weight:700;font-size:0.85em;">'
                 '⚙️ KLASSE B — KONTEXTABHÄNGIG</span></div>',
                 unsafe_allow_html=True)
-            for rule, active in [
-                ("Beneish: nur wenn alle 8 [LIVE] → sonst SKIP",        True),
-                ("Zyklus-Overlay: nur bei zyklischen Sektoren",          True),
-                ("Piotroski-Override: nur bei Finanzsektor / Deep Value", True),
-                ("Python DCF: FULL DEEP DIVE + stabile Datenlage",       True),
-                ("Reverse-DCF primär: lückenhaft / Talsohle / neg. FCF", True),
-                ("Moat-Verifikation Vollformat: nur FULL DEEP DIVE",     True),
-                ("Management-Score Vollformat: nur FULL DEEP DIVE",      True),
+            for rule in [
+                "Beneish: nur wenn alle 8 [S1/LIVE] → sonst SKIP",
+                "Zyklus-Overlay: nur bei zyklischen Sektoren",
+                "Piotroski-Override: Finanzsektor / Deep Value",
+                "Python DCF: FULL DEEP DIVE + stabile Datenlage",
+                "Reverse-DCF primär: lückenhaft / Talsohle / neg. FCF",
+                "Moat-Verifikation Vollformat: nur FULL DEEP DIVE",
+                "Management-Score Vollformat: nur FULL DEEP DIVE",
             ]:
-                col_r = "#d29922" if active else "#8b949e"
                 st.markdown(
-                    f'<div style="border-left:2px solid {col_r};padding:2px 7px;margin:2px 0;">'
+                    f'<div style="border-left:2px solid #d29922;padding:2px 7px;margin:2px 0;">'
                     f'<span style="color:#c9d1d9;font-size:0.75em;">• {rule}</span></div>',
                     unsafe_allow_html=True)
-
-        with cc:
+            st.markdown("---")
             st.markdown(
                 '<div style="background:#8b949e22;border:1px solid #8b949e;border-radius:6px;'
-                'padding:8px 12px;margin-bottom:6px;">'
+                'padding:8px 12px;margin:6px 0;">'
                 '<span style="color:#8b949e;font-weight:700;font-size:0.85em;">'
                 '📋 KLASSE C — BEST EFFORT</span></div>',
                 unsafe_allow_html=True)
@@ -3478,7 +3539,7 @@ def _render_globale_regeln(j: dict, m: dict):
                 "Analyst-Konsens-Check",
                 "Insider-Käufe/-Verkäufe (6M)",
                 "Technical Alignment",
-                "Reverse-DCF Sanity Check (zusätzl. bei stabilem Full DCF)",
+                "Reverse-DCF Sanity Check (zusätzl. bei stabilem DCF)",
             ]:
                 st.markdown(
                     f'<div style="border-left:2px solid #8b949e;padding:2px 7px;margin:2px 0;">'
