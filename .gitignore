@@ -1,0 +1,22 @@
+# Logs
+*.log
+jack.log
+jack.error.log
+
+# macOS scripts
+*.command
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Secrets (niemals committen!)
+secrets.toml
+.streamlit/secrets.toml
