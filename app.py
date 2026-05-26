@@ -330,6 +330,88 @@ def _cross_validate(yf_val, sec_val) -> dict:
                 "note": f">20% Abweichung ({delta:.1%}) — prüfe Definitionen (TTM vs FY, Adjustments)"}
 
 
+# ── SMART TICKER RESOLVER (ISIN / WKN / Firmenname → Ticker) ─────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def _search_ticker_yahoo(query: str) -> str:
+    """Yahoo Finance Suche: Firmenname → bester Ticker-Treffer."""
+    try:
+        resp = requests.get(
+            "https://query2.finance.yahoo.com/v1/finance/search",
+            params={"q": query, "quotesCount": 6, "newsCount": 0, "enableFuzzyQuery": True},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; JACK/1.0)"},
+            timeout=6,
+        )
+        data = resp.json()
+        quotes = data.get("quotes", [])
+        # Bevorzuge Aktien (EQUITY) und ETFs, dann alles andere
+        for q in quotes:
+            if q.get("quoteType") in ("EQUITY", "ETF"):
+                return q.get("symbol", "")
+        return quotes[0].get("symbol", "") if quotes else ""
+    except Exception:
+        return ""
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _isin_to_ticker(isin: str) -> str:
+    """OpenFIGI API: ISIN → Yahoo Finance Ticker."""
+    try:
+        resp = requests.post(
+            "https://api.openfigi.com/v3/mapping",
+            json=[{"idType": "ID_ISIN", "idValue": isin}],
+            headers={"Content-Type": "application/json"},
+            timeout=6,
+        )
+        data = resp.json()
+        if not data or not data[0].get("data"):
+            # Fallback: Yahoo Finance Search mit ISIN direkt
+            return _search_ticker_yahoo(isin)
+        # Bevorzuge US/bekannte Börsen
+        _pref = ("US", "UW", "UN", "UA", "GQ", "GS", "GM", "NA", "LN", "PA", "EB")
+        for exch in _pref:
+            for item in data[0]["data"]:
+                if item.get("exchCode", "") == exch:
+                    return item.get("ticker", "")
+        return data[0]["data"][0].get("ticker", "")
+    except Exception:
+        return _search_ticker_yahoo(isin)
+
+
+def resolve_input(raw: str) -> tuple:
+    """
+    Löst Ticker / ISIN / WKN / Firmenname zu einem yfinance-Ticker auf.
+    Returns: (ticker: str, label: str, error: str|None)
+    """
+    inp = raw.strip()
+    up  = inp.upper()
+
+    # ── Bereits ein Ticker (kurz, alphanumerisch + Punkt/Bindestrich) ─────────
+    if len(up) <= 8 and all(c.isalnum() or c in ".-^=" for c in up):
+        return up, "", None
+
+    # ── ISIN: 2 Buchstaben + 10 alphanumerische Zeichen = 12 Zeichen ─────────
+    if len(up) == 12 and up[:2].isalpha() and up[2:].isalnum():
+        ticker = _isin_to_ticker(up)
+        if ticker:
+            return ticker, f"ISIN {up} → **{ticker}**", None
+        return None, "", f"ISIN {up} konnte nicht aufgelöst werden."
+
+    # ── WKN: 6 alphanumerische Zeichen (keine reine Buchstabenfolge) ──────────
+    if len(up) == 6 and up.isalnum():
+        # WKN via Yahoo-Suche (füge .DE als Hinweis hinzu)
+        ticker = _search_ticker_yahoo(inp)
+        if ticker:
+            return ticker, f"WKN/Suche '{up}' → **{ticker}**", None
+        return None, "", f"WKN {up} nicht gefunden."
+
+    # ── Firmenname: Yahoo Finance Volltext-Suche ──────────────────────────────
+    ticker = _search_ticker_yahoo(inp)
+    if ticker:
+        return ticker, f"'{inp}' → **{ticker}**", None
+
+    return None, "", f"'{inp}' — kein Ticker gefunden."
+
+
 # ── Data fetching ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch(symbol: str) -> dict:
@@ -5749,18 +5831,33 @@ else:
 
     ticker_input = st.text_input(
         "Ticker eingeben",
-        placeholder=placeholder,
+        placeholder="AAPL · SAP.DE · US0378331005 · 865985 · Apple Inc.",
         label_visibility="collapsed",
-    ).strip().upper()
+    ).strip()
 
     if ticker_input:
-        with st.spinner(f"Lade Daten für {ticker_input} von Yahoo Finance..."):
-            raw = fetch(ticker_input)
+        # ── Smart Resolver: Ticker / ISIN / WKN / Firmenname ─────────────────
+        with st.spinner("Suche Ticker..."):
+            resolved, resolve_label, resolve_err = resolve_input(ticker_input)
 
-        if "error" in raw:
+        if resolve_err:
+            st.error(f"❌ {resolve_err}")
+            st.info("Eingabe-Formate: Ticker (AAPL), ISIN (US0378331005), WKN (865985), Firmenname (Apple)")
+            resolved = None
+
+        if resolved:
+            if resolve_label:
+                st.caption(f"🔍 Aufgelöst: {resolve_label}")
+            with st.spinner(f"Lade Daten für {resolved} von Yahoo Finance..."):
+                raw = fetch(resolved)
+            ticker_input = resolved  # verwende aufgelösten Ticker weiterhin
+
+        if resolved and "error" in raw:
             st.error(f"❌ {raw['error']}")
             st.info("Tipp: US-Aktien ohne Kürzel (AAPL), deutsche Aktien mit .DE (SAP.DE), Schweizer mit .SW (NESN.SW)")
-        else:
+            resolved = None
+
+        if resolved and "error" not in raw:
             m = calc_metrics(raw)
             j = calc_jack(m)
             hist     = raw.get("hist", pd.DataFrame())
