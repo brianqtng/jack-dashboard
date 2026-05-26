@@ -989,7 +989,14 @@ def _calc_reaper_score(k_met: int, k_basis: int, e_met: int, e_total: int,
 
     raw = anchor_lo + (e_ratio * (anchor_hi - anchor_lo)) + val_pts * 0.5
     raw -= len(yellow_flags) * 0.3
-    return max(anchor_lo, min(anchor_hi, round(raw)))
+    score = max(anchor_lo, min(anchor_hi, round(raw)))
+
+    # ── JACK-Regel: Maximum bei 🔴 Konfidenz = 6/10 ─────────────────────────
+    # 🔴 Konfidenz tritt auf bei: roten Flags ODER K-Kriterien stark lückenhaft
+    if red_flags:
+        score = min(score, 6)
+
+    return score
 
 
 # ── PERSONA & MANDAT VERDICT ───────────────────────────────────────────────────
@@ -2095,6 +2102,9 @@ def render(symbol: str, m: dict, j: dict, hist: pd.DataFrame, eps_hist: pd.DataF
     # Auto-Detection Engine + K-BASIS (zeigt Modus, Grund, K-Kriterien)
     _render_k_basis_engine(j, m)
     st.markdown("---")
+    # Prioritäten-Logik + Reaper Anker-Skala
+    _render_prioritaeten_reaper(j, m)
+    st.markdown("---")
     _render_fx_pflicht(m)
     _render_flag_check(j, m)
     st.markdown("---")
@@ -3130,6 +3140,93 @@ def _render_daten_konfidenz(j: dict, m: dict):
                 st.error("⛔ Datenqualität < 65% — Analyse-Ergebnisse unzuverlässig!")
             elif pct_a < 0.85:
                 st.warning("⚠️ Datenlücken vorhanden — Konfidenz max 🟡 MITTEL empfohlen")
+
+
+# ── PRIORITÄTEN-LOGIK + REAPER ANKER ─────────────────────────────────────────
+def _render_prioritaeten_reaper(j: dict, m: dict):
+    """
+    Zeigt PRIORITÄTEN-LOGIK (① DNA ② VALUATION ③ REST) und
+    REAPER SCORE ANKER-SKALA (9-10 / 6-8 / 3-5 / 1-2) als expandierbares Panel.
+    """
+    rs        = j.get("reaper_score", 1)
+    tiefe_d   = j.get("analyse_tiefe_data", {})
+    val_reason = tiefe_d.get("val_reason", "Datenlage bestimmt Bewertungsmethode")
+    k_icon, k_label, k_color = j.get("konfidenz", ("🔴", "NIEDRIG", "#da3633"))
+    red_konfidenz = k_icon == "🔴"
+
+    # Aktiver Valuation-Pfad
+    fcf = m.get("fcf") or 0
+    fcf_m = m.get("fcf_margin") or 0
+    if fcf <= 0:
+        val_path = "Negativer FCF → Multiples-Only + Reverse-DCF [B]"
+        val_col  = "#da3633"
+    elif fcf_m < 0.05:
+        val_path = "Lückenhaft / Talsohle → Reverse-DCF Primär [B] + Multiples"
+        val_col  = "#d29922"
+    else:
+        val_path = "[S1] stabil → Full DCF [B] + Reverse-DCF Sanity [C]"
+        val_col  = "#3fb950"
+
+    with st.expander("⚡ PRIORITÄTEN-LOGIK & REAPER ANKER-SKALA", expanded=False):
+        col_p, col_r = st.columns([1, 1.2])
+
+        with col_p:
+            st.markdown("**⚡ PRIORITÄTEN-LOGIK**")
+            for i, (step, desc, active) in enumerate([
+                ("① DNA-CHECK",       "Immer vollständig — kein Skip",              True),
+                ("② VALUATION",       val_path,                                      True),
+                ("③ REST (B/C)",      "Best Effort · kein Analyse-Stopper",         True),
+            ], 1):
+                col_s = val_col if i == 2 else "#388bfd"
+                st.markdown(
+                    f'<div style="background:{col_s}11;border-left:3px solid {col_s};'
+                    f'border-radius:0 5px 5px 0;padding:6px 10px;margin:4px 0;">'
+                    f'<span style="color:{col_s};font-weight:700;font-size:0.85em;">{step}</span><br>'
+                    f'<span style="color:#c9d1d9;font-size:0.78em;">{desc}</span></div>',
+                    unsafe_allow_html=True)
+
+            if red_konfidenz:
+                st.markdown(
+                    '<div style="background:#da363322;border:1px solid #da3633;border-radius:5px;'
+                    'padding:6px 10px;margin-top:8px;">'
+                    '<span style="color:#da3633;font-weight:700;font-size:0.82em;">'
+                    '🔴 Konfidenz-Deckel aktiv → Score max 6/10</span></div>',
+                    unsafe_allow_html=True)
+
+        with col_r:
+            st.markdown("**🎯 REAPER ANKER-SKALA**")
+            for lo, hi, label, desc, treiber in [
+                (9, 10, "AUSNAHME-COMPOUNDER", "#3fb950",
+                 "ROIC >30% · Moat 4/4 · Reinvestment-Runway · Bewertung fair · Tier 1"),
+                (6,  8, "QUALITÄTS-KERN",      "#79c0ff",
+                 "K-BASIS erfüllt · Moat 2–3/4 · Bewertung akzeptabel · kein krit. Risiko"),
+                (3,  5, "GRENZFALL/SPEKULATION","#d29922",
+                 "K-Lücken ODER Moat schwach ODER überbewertet · min. 1 Stop-These aktiv"),
+                (1,  2, "FINGER WEG",           "#da3633",
+                 "Mehrere K verfehlt · Moat N/N · Bewertung absurd · Beneish/Mgmt-Risiko"),
+            ]:
+                active = lo <= rs <= hi
+                bg = f"background:{desc}11;" if active else ""
+                border = f"border:1px solid {desc};" if active else "border:1px solid #30363d;"
+                st.markdown(
+                    f'<div style="{bg}{border}border-radius:5px;padding:5px 10px;margin:3px 0;">'
+                    f'<span style="color:{desc};font-weight:700;font-size:0.82em;">'
+                    f'{"▶ " if active else ""}{lo}–{hi} │ {label}</span><br>'
+                    f'<span style="color:#8b949e;font-size:0.73em;">{treiber}</span></div>',
+                    unsafe_allow_html=True)
+
+            st.markdown(
+                f'<div style="background:#0d1117;border:1px solid #30363d;border-radius:5px;'
+                f'padding:5px 10px;margin-top:6px;font-family:monospace;font-size:0.78em;">'
+                f'<span style="color:#8b949e;">Aktiver Anker: </span>'
+                f'<span style="color:#e6edf3;font-weight:700;">'
+                f'{"9–10 AUSNAHME-COMPOUNDER" if rs >= 9 else "6–8 QUALITÄTS-KERN" if rs >= 6 else "3–5 GRENZFALL" if rs >= 3 else "1–2 FINGER WEG"}'
+                f'</span>'
+                f'<span style="color:#8b949e;"> · Score: </span>'
+                f'<span style="color:{k_color};font-weight:700;">{rs}/10'
+                f'{" (🔴 Deckel)" if red_konfidenz else ""}</span>'
+                f'</div>',
+                unsafe_allow_html=True)
 
 
 # ── GLOBALE REGELN ────────────────────────────────────────────────────────────
