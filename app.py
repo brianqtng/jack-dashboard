@@ -541,9 +541,10 @@ def calc_metrics(raw: dict) -> dict:  # noqa: C901
 
     # EBITDA → Net Debt / EBITDA
     ebitda = _i(info, "ebitda")
+    _da = _v(cf, "Depreciation", "Depreciation And Amortization") or 0
+    m["_da"] = _da                          # Abschreibungen (für Capex/DA Ratio)
     if ebitda is None and op_inc:
-        da     = _v(cf, "Depreciation", "Depreciation And Amortization") or 0
-        ebitda = op_inc + da
+        ebitda = op_inc + _da
     if total_debt is not None and cash is not None:
         net_debt = total_debt - cash
         m["net_debt"] = net_debt
@@ -787,6 +788,30 @@ def calc_metrics(raw: dict) -> dict:  # noqa: C901
     if buyback and m.get("revenue"):
         m["buyback_yield_est"] = abs(buyback) / (m.get("mktcap") or 1)
 
+    # ── Abgeleitete Kennzahlen für Override-Checks ────────────────────────────
+    # FCF-Konvertierung (FCF / Net Income) — für 5I Infrastruktur Check
+    _ni_v = m.get("_net_inc") or 0
+    _fcf_v = m.get("fcf") or 0
+    if _ni_v and _ni_v > 0 and _fcf_v != 0:
+        m["fcf_conversion"] = _fcf_v / _ni_v
+
+    # Capex / Abschreibungen — für 5I: Wachstums- vs. Substanzerhalt-Signal
+    _da_v   = m.get("_da") or 0
+    _capex_v = abs(m.get("_capex") or 0)
+    if _da_v > 0 and _capex_v > 0:
+        m["capex_da_ratio"] = _capex_v / _da_v
+
+    # Asset Turnover = Revenue / Total Assets (Proxy für Infrastruktur-Effizienz)
+    _rev_v    = m.get("revenue") or 0
+    _assets_v = m.get("_assets") or 0
+    if _rev_v > 0 and _assets_v > 0:
+        m["asset_turnover"] = _rev_v / _assets_v
+
+    # Rule of 40 (SaaS): Rev-CAGR + Real FCF-Marge (als Dezimalzahl, Schwelle 0.40)
+    _rc_v  = m.get("rev_cagr") or 0
+    _rfcfm = m.get("fcf_margin") or 0            # wird nach SBC-Berechnung überschrieben
+    m["rule_of_40_raw"] = _rc_v + _rfcfm          # wird in calc_jack mit real FCF übderschrieben
+
     # Daten-Hierarchie Tags per Metrik
     m["_tag_price"]   = "LIVE"      # yfinance live price
     m["_tag_fin"]     = "VERIFIED"  # audited annual financials
@@ -1010,6 +1035,106 @@ def _detect_flags(m: dict) -> list[dict]:
         flag("ROIC-SCHWÄCHE", "#d29922", f"ROIC = {pct(roic)} (<5%)")
 
     return flags
+
+
+# ── JACK FLAG-CHECKLIST (alle 9 Spec-Flags) ───────────────────────────────────
+def _calc_flags_checklist(j: dict, m: dict) -> list:
+    """Vollständige JACK FLAG-CHECKLIST gem. Spec: alle 9 Flags mit Status."""
+    mode   = m.get("_k_basis_mode", "5S Standard")
+    transf = j.get("transformation", {})
+    wacc_v = j.get("wacc_data", {}).get("wacc", 0) or 0
+    roic_v = m.get("roic") or 0
+
+    result = []
+
+    def fl(name, active, icon_on, color_on, reason_on, reason_off):
+        result.append({
+            "name":   name,
+            "active": active,
+            "icon":   icon_on if active else "[ ]",
+            "color":  color_on if active else "#8b949e",
+            "reason": reason_on if active else reason_off,
+        })
+
+    # 1 — ESTIMATE-RETTUNG
+    dk = j.get("daten_konfidenz", {})
+    _est_count = dk.get("estimate_count", 0)
+    fl("ESTIMATE-RETTUNG",
+       _est_count > 0,
+       "⚡", "#d29922",
+       f"{_est_count} E-Kriterien [ESTIMATE] → Konfidenz-Deckel 🟡",
+       "Kein [ESTIMATE]-Einsatz erkannt")
+
+    # 2 — PIOTROSKI-OVERRIDE
+    fl("PIOTROSKI-OVERRIDE",
+       mode == "4P Piotroski",
+       "⚡", "#388bfd",
+       "Piotroski primäres Gate · K-BASIS = 4 · ROE-Trend als E-Ersatz",
+       "Inaktiv")
+
+    # 3 — FINANZ-OVERRIDE
+    fl("FINANZ-OVERRIDE",
+       mode == "5F Finanz",
+       "⚡", "#388bfd",
+       "ROE ersetzt ROIC/FCF-Basis · K-BASIS = 5",
+       "Inaktiv")
+
+    # 4 — SAAS-OVERRIDE
+    fl("SAAS-OVERRIDE",
+       mode == "5SaaS",
+       "⚡", "#388bfd",
+       "NRR als K-Kriterium [manuell] · Bruttomarge ≥65% · K-BASIS = 5",
+       "Inaktiv")
+
+    # 5 — TRANSFORMATION-FLAG
+    fl("TRANSFORMATION-FLAG",
+       transf.get("active", False),
+       "⚡", "#388bfd",
+       "FCF-Marge E (temporär) · EPS-CAGR normalisiert · Score max 6 · Tier max 3",
+       "Inaktiv — FCF-Marge ≥ 20% oder Qualifikation nicht erfüllt")
+
+    # 6 — DISKREPANZ-FLAG (SEC vs yfinance Abweichung 10-20%)
+    _cv_keys = ["revenue", "net_income", "op_income", "gross", "assets"]
+    _has_diskr = any(
+        m.get("_cv_" + _k, {}).get("tag") == "DISKREPANZ"
+        for _k in _cv_keys
+    )
+    fl("DISKREPANZ-FLAG",
+       _has_diskr,
+       "⚠️", "#d29922",
+       "10–20% Abweichung yfinance vs SEC → Stufe 1 (SEC) dominiert",
+       "Keine Diskrepanz erkannt (SEC nicht verfügbar oder sauber)")
+
+    # 7 — TALSOHLE (FCF < 0 + ROIC/Umsatz schwach)
+    _is_talsohle = (
+        (m.get("fcf") or 0) < 0 and
+        ((m.get("roic") or 0) < 0 or (m.get("rev_cagr") or 0) < -0.05)
+    )
+    fl("TALSOHLE",
+       _is_talsohle,
+       "🔻", "#d29922",
+       "FCF < 0 + ROIC/Umsatz schwach — normalisierte Mid-Cycle-Werte verwenden",
+       "Nicht erkannt")
+
+    # 8 — CAPEX-AUSNAHME (ROIC > WACC → Capex wertschaffend)
+    _capex_ausn = (
+        roic_v > 0 and wacc_v > 0 and roic_v > wacc_v and
+        (m.get("capex_ratio") or 0) > 0.10
+    )
+    fl("CAPEX-AUSNAHME",
+       _capex_ausn,
+       "⚡", "#3fb950",
+       f"ROIC {pct(roic_v)} > WACC {pct(wacc_v)} — hohes Capex wertschaffend gerechtfertigt",
+       "Inaktiv (ROIC ≤ WACC oder Capex ≤ 10%)")
+
+    # 9 — INFRASTRUCTURE-CAPITAL-INTENSIVE-OVERRIDE
+    fl("INFRASTRUCTURE-CAPITAL-INTENSIVE-OVERRIDE",
+       mode in ("5I Infrastruktur", "5V Versorger", "5K Sachwerte"),
+       "⚡", "#388bfd",
+       f"Substanz- & Cash-Konvertierungs-Fokus · FCF-Konvertierung · Capex/DA · Modus: {mode}",
+       "Inaktiv")
+
+    return result
 
 
 # ── DATEN-KONFIDENZ (SCHRITT 2B) ──────────────────────────────────────────────
@@ -1300,6 +1425,10 @@ def calc_jack(m: dict) -> dict:
     # Real FCF available flag (both fcf and revenue must be present)
     _real_fcf_avail = m.get("fcf") is not None and m.get("revenue") is not None
 
+    # Rule of 40 (SaaS): Rev-CAGR + Real FCF-Marge (mit SBC-bereinigtem FCF)
+    _rule40 = (m.get("rev_cagr") or 0) + _real_fcf_m
+    m["rule_of_40"] = _rule40
+
     # --- K-Kriterien (Gatekeeper) — mode-spezifisch ---
     K = {}
     def k(name, passed, val, avail=True):
@@ -1322,8 +1451,10 @@ def calc_jack(m: dict) -> dict:
         k("SBC < 10%",        _sbc_ok,                               _sbc_val,                    _sbc_av)
 
     elif mode == "5SaaS":
-        # ── SaaS / High-Margin Tech: Bruttomarge + ARR-Wachstum dominant ─────
-        k("ROIC > 15%",       (m.get("roic") or 0) > 0.15,          pct(m.get("roic")),          m.get("roic") is not None)
+        # ── SaaS / High-Margin Tech: NRR primäres Gate · Bruttomarge · FCF dominant
+        # NRR: nicht per API verfügbar → avail=False (N/V · manuell prüfen, kein Auto-Abbruch)
+        _nrr = m.get("nrr")   # None da yfinance kein NRR liefert
+        k("NRR ≥ 110%",       (_nrr or 0) >= 1.10,                  f"{_nrr:.0%}" if _nrr else "N/V [IR]", False)
         k("FCF-Marge ≥ 20%",  _real_fcf_m >= 0.20,                  pct(_real_fcf_m) + " (real)", _real_fcf_avail)
         k("Bruttomarge ≥65%", (m.get("gross_margin") or 0) >= 0.65, pct(m.get("gross_margin")),  m.get("gross_margin") is not None)
         k("Rev-CAGR ≥ 15%",   (m.get("rev_cagr") or 0) >= 0.15,    pct(m.get("rev_cagr")),      m.get("rev_cagr") is not None)
@@ -1364,12 +1495,19 @@ def calc_jack(m: dict) -> dict:
     elif mode == "4P Piotroski":
         # ── Piotroski-Override: Deep Value — Piotroski ist primäres Gate ──────
         # k_basis=4, 5 Kriterien → darf 1 verfehlen (SBC als zusätzlicher Check)
+        # ROE-Trend (3J) als Ersatz-K wenn im Finanzsektor
         _real_fcf_pos = (_fcf_raw - _sbc_deduct) > 0
+        _roe_v  = m.get("roe") or 0
+        _roa_v  = m.get("roa") or 0
+        # ROE-Trend Proxy: ROE > ROA (Leverage sinnvoll eingesetzt = positiver Trend)
+        _roe_trend_ok = _roe_v > _roa_v and _roe_v > 0.05
         k("Piotroski ≥ 7",    (ps or 0) >= 7,                       _ps_str,                     ps is not None)
         k("ROIC ≥ 10%",       (m.get("roic") or 0) >= 0.10,         pct(m.get("roic")),          m.get("roic") is not None)
         k("FCF > 0",          _real_fcf_pos,                         cap_fmt(_fcf_raw - _sbc_deduct) + " (real)", _real_fcf_avail)
         k("ND/EBITDA < 4x",   (m.get("nd_ebitda") or 99) < 4.0,    xfmt(m.get("nd_ebitda")),    m.get("nd_ebitda") is not None)
         k("SBC < 10%",        _sbc_ok,                               _sbc_val,                    _sbc_av)
+        # Ersatz K: ROE-Trend (Piotroski-Override Spec) — als E-Kriterium da K schon 5
+        m["_roe_trend_ok"]    = _roe_trend_ok   # für E-Kriterien und Flag-Check
 
     else:
         # ── 5S Standard (Default) ────────────────────────────────────────────
@@ -1386,26 +1524,53 @@ def calc_jack(m: dict) -> dict:
         E[name] = {"pass": passed, "val": val}
 
     if mode == "5F Finanz":
-        e("Bruttomarge ≥ 30%",  (m.get("gross_margin") or 0) >= 0.30, pct(m.get("gross_margin")))
+        # Subtyp-Erkennung für Finanzsektor-spezifische E-Kriterien
+        _ind = (m.get("industry") or "").lower()
+        _sec_f = (m.get("sector") or "").lower()
+        _is_versicherer   = any(x in _ind for x in ["insurance", "reinsur"])
+        _is_asset_mgr     = any(x in _ind for x in ["asset management", "investment management",
+                                                      "capital markets", "financial exchange"])
+        _is_finanzdienstl = not _is_versicherer and not _is_asset_mgr
+
         e("ROE ≥ 15%",           (m.get("roe") or 0) >= 0.15,         pct(m.get("roe")))
         e("Rev-CAGR ≥ 6%",       (m.get("rev_cagr") or 0) >= 0.06,    pct(m.get("rev_cagr")))
-        e("ND/EBITDA < 4x",      (m.get("nd_ebitda") or 99) < 4.0,   xfmt(m.get("nd_ebitda")))
         e("Op. Marge ≥ 20%",     (m.get("op_margin") or 0) >= 0.20,  pct(m.get("op_margin")))
+        e("ND/EBITDA < 4x",      (m.get("nd_ebitda") or 99) < 4.0,   xfmt(m.get("nd_ebitda")))
         e("Piotroski ≥ 5",       (ps or 0) >= 5,                     _ps_str)
+        # Subtyp-spezifische E-Kriterien (N/V wenn nicht aus API verfügbar)
+        if _is_versicherer:
+            e("Combined Ratio < 95%", False, "N/V [IR/Earnings]")    # nicht in yfinance
+            e("Solvency II > 175%",   False, "N/V [IR/Earnings]")
+        elif _is_asset_mgr:
+            e("AUM-Wachstum > 10%",   False, "N/V [IR/Earnings]")
+            e("Cost-Income < 55%",    False, "N/V [IR/Earnings]")
+        else:
+            e("Net Rev. Margin stabil", (m.get("op_margin") or 0) > 0.15, pct(m.get("op_margin")))
+            e("Op. Leverage Pflicht",    m.get("op_leverage", False), "Ja" if m.get("op_leverage") else "Nein")
+
     elif mode == "5SaaS":
-        e("Bruttomarge ≥ 70%",  (m.get("gross_margin") or 0) >= 0.70, pct(m.get("gross_margin")))
+        _r40 = m.get("rule_of_40") or (_real_fcf_m + (m.get("rev_cagr") or 0))
+        e("Rule of 40 ≥ 40%",    _r40 >= 0.40,                        f"{_r40:.0%} (FCF+Rev)")
+        e("ARR-Wachstum ≥ 20%",  (m.get("rev_cagr") or 0) >= 0.20,   pct(m.get("rev_cagr")) + " [Proxy]")
         e("Op. Marge ≥ 15%",     (m.get("op_margin") or 0) >= 0.15,  pct(m.get("op_margin")))
-        e("Rev-CAGR ≥ 20%",      (m.get("rev_cagr") or 0) >= 0.20,   pct(m.get("rev_cagr")))
         e("ND/EBITDA < 2x",      (m.get("nd_ebitda") or 99) < 2.0,   xfmt(m.get("nd_ebitda")))
-        e("SBC < 10%",           (m.get("sbc_intensity") or 0) < 0.10, pct(m.get("sbc_intensity")))
-        e("CCC < 0d",            (m.get("ccc") or 999) < 0,          dfmt(m.get("ccc")))
+        e("LTV/CAC ≥ 3x",        False,                                "N/V [IR/Earnings]")
+        e("RPO-Wachstum ≥ 15%",  False,                                "N/V [10-K/IR]")
+
     elif mode in ("5I Infrastruktur", "5V Versorger"):
-        e("Bruttomarge ≥ 40%",  (m.get("gross_margin") or 0) >= 0.40, pct(m.get("gross_margin")))
-        e("EBITDA > 0",          (m.get("fcf") or 0) > 0,             cap_fmt(m.get("fcf")))
+        _fcf_conv  = m.get("fcf_conversion")
+        _capex_da  = m.get("capex_da_ratio")
+        _at        = m.get("asset_turnover")
+        e("FCF-Konvert. ≥ 80%",  (_fcf_conv or 0) >= 0.80,
+          f"{_fcf_conv:.0%}" if _fcf_conv is not None else "N/V")
+        e("Capex/Abschr. > 1.1x", (_capex_da or 0) > 1.1,
+          f"{_capex_da:.1f}x" if _capex_da is not None else "N/V")
         e("Rev-CAGR ≥ 3%",       (m.get("rev_cagr") or 0) >= 0.03,   pct(m.get("rev_cagr")))
-        e("Piotroski ≥ 5",       (ps or 0) >= 5,                     _ps_str)
         e("ROA > 3%",            (m.get("roa") or 0) > 0.03,         pct(m.get("roa")))
-        e("Capex ≤ 35%",         (m.get("capex_ratio") or 99) <= 0.35, pct(m.get("capex_ratio")))
+        e("Reg. Burggraben",     False,                                "N/V [Manuell prüfen]")
+        e("Asset Turnover stabil", (_at or 0) > 0.30,
+          f"{_at:.2f}x" if _at is not None else "N/V")
+
     elif mode == "5K Sachwerte":
         e("Op. Marge ≥ 15%",     (m.get("op_margin") or 0) >= 0.15,  pct(m.get("op_margin")))
         e("Rev-CAGR ≥ 0%",       (m.get("rev_cagr") or -99) >= 0,    pct(m.get("rev_cagr")))
@@ -1414,12 +1579,14 @@ def calc_jack(m: dict) -> dict:
         e("Div.-Rendite ≥ 2%",   (m.get("dividend") or 0) >= 0.02,   pct(m.get("dividend")))
         e("Op. Leverage",        m.get("op_leverage", False),         "Ja" if m.get("op_leverage") else "Nein")
     elif mode == "4P Piotroski":
+        _roe_trend_ok = m.get("_roe_trend_ok", False)
+        e("ROE-Trend (3J-Proxy)", _roe_trend_ok,
+          "Positiv" if _roe_trend_ok else "N/V / Fallend")
+        e("Sektormetrik-Trend",  m.get("op_leverage", False),        "Op. Leverage vorhanden" if m.get("op_leverage") else "Fallend")
         e("P/B < 1.5x",          0 < (m.get("price_to_book") or 99) < 1.5, f"{(m.get('price_to_book') or 0):.1f}x")
         e("ROA > 3%",            (m.get("roa") or 0) > 0.03,         pct(m.get("roa")))
         e("Rev-CAGR ≥ 0%",       (m.get("rev_cagr") or -99) >= 0,    pct(m.get("rev_cagr")))
         e("Op. Marge ≥ 10%",     (m.get("op_margin") or 0) >= 0.10,  pct(m.get("op_margin")))
-        e("Bruttomarge ≥ 30%",  (m.get("gross_margin") or 0) >= 0.30, pct(m.get("gross_margin")))
-        e("SBC < 10%",           (m.get("sbc_intensity") or 0) < 0.10, pct(m.get("sbc_intensity")))
     else:
         # 5S Standard E-Kriterien
         e("Bruttomarge ≥ 60%",  (m.get("gross_margin") or 0) >= 0.60,  pct(m.get("gross_margin")))
@@ -1506,6 +1673,9 @@ def calc_jack(m: dict) -> dict:
     # --- ABBRUCH-LOGIK ---
     j["abbruch"] = _calc_abbruch(j, mode="FULL")
 
+    # --- FLAG-CHECKLIST (alle 9 Spec-Flags) ---
+    # Muss nach WACC sein (braucht wacc_data) → wird nach WACC befüllt (unten)
+
     # --- WACC + DCF + REVERSE-DCF + STRESS-TEST ---
     wacc_d = _calc_wacc(m)
     j["wacc_data"]    = wacc_d
@@ -1531,6 +1701,9 @@ def calc_jack(m: dict) -> dict:
     # --- WACC-FLAG update (now dynamic) ---
     wacc_val = wacc_d.get("wacc", 0)
     j["wacc_flag"] = wacc_d.get("flag", "🟢")
+
+    # --- FLAG-CHECKLIST (alle 9 Spec-Flags · nach WACC da roic>wacc Check) ---
+    j["flags_checklist"] = _calc_flags_checklist(j, m)
 
     return j
 
@@ -3066,14 +3239,20 @@ def _calc_abbruch(j: dict, mode: str = "FULL") -> dict:
     k_met   = j.get("k_met", 0)
     k_basis = j.get("k_basis", 5)
     flags   = j.get("flags", [])
-    has_nv  = any(not v.get("avail", True) for v in j.get("K", {}).values())
+    # NRR (5SaaS) ist API-bedingt immer N/V → kein Auto-Abbruch, nur Warnung
+    _nv_keys = [
+        name for name, v in j.get("K", {}).items()
+        if not v.get("avail", True) and name != "NRR ≥ 110%"
+    ]
+    has_nv = bool(_nv_keys)
 
     abort = False
     reason = ""
 
     if has_nv:
         abort = True
-        reason = "K-Kriterium [N/V] → SOFORT-ABBRUCH (JACK Klasse A Regel)"
+        _nv_list = ", ".join(_nv_keys)
+        reason = f"K-Kriterium [N/V]: {_nv_list} → SOFORT-ABBRUCH (JACK Klasse A Regel)"
     elif mode == "FULL" and k_met <= k_basis - 2:
         abort = True
         reason = f"FULL DEEP DIVE: K={k_met} ≤ BASIS−2={k_basis-2} → ABBRUCH"
@@ -3604,10 +3783,14 @@ def _render_flag_check(j: dict, m: dict):
     with st.expander("⚑ FLAG-CHECK & KONFIDENZ-DECKEL", expanded=True):
         col1, col2 = st.columns(2)
 
+        # ── Linke Spalte: Aktive Klasse-A Flags ──────────────────────────────
         with col1:
-            st.markdown("**Aktive Flags**")
-            if not flags and not transf.get("active") and debt_mat.get("status") != "KRITISCH":
-                st.markdown('<span style="color:#3fb950;">✅ Keine kritischen Flags aktiv</span>',
+            st.markdown("**🚨 Aktive KLASSE-A Flags**")
+            _any_flag = (flags or transf.get("active") or
+                         debt_mat.get("status") == "KRITISCH" or
+                         (capex_ch.get("triggered") and capex_ch.get("intensity") == "KRITISCH"))
+            if not _any_flag:
+                st.markdown('<span style="color:#3fb950;font-size:0.85em;">✅ Keine kritischen Flags aktiv</span>',
                             unsafe_allow_html=True)
             for f in flags:
                 st.markdown(
@@ -3639,40 +3822,44 @@ def _render_flag_check(j: dict, m: dict):
                     f'<span style="font-size:0.8em;color:#c9d1d9;">{capex_ch.get("note","")}</span></div>',
                     unsafe_allow_html=True)
 
-        with col2:
+            st.markdown("---")
+
+            # ── KONFIDENZ-DECKEL ─────────────────────────────────────────────
             st.markdown("**KONFIDENZ-DECKEL Hierarchie**")
-            # SBC-INFECTION-CHECK (Pflicht jede Analyse)
             sbc_intensity = m.get("sbc_intensity") or 0
             sbc_infection = sbc_intensity > 0.15
             sbc_warn      = sbc_intensity > 0.10
 
             deckel_items = [
                 (k_icon, f"Gesamt-Konfidenz: {k_label}", k_color),
-                ("🔴" if abbruch.get("abort") else "🟢", "Abbruch-Logik: " + ("AKTIV" if abbruch.get("abort") else "OK"), "#da3633" if abbruch.get("abort") else "#3fb950"),
-                (debt_mat.get("icon","🟢"), f"Debt Maturity: {debt_mat.get('status','—')}", debt_mat.get("color","#3fb950")),
-                ("🟢" if not transf.get("active") else "🔵", f"Transformation: {'AKTIV (5T)' if transf.get('active') else 'Inaktiv'}", "#388bfd" if transf.get("active") else "#3fb950"),
+                ("🔴" if abbruch.get("abort") else "🟢",
+                 "Abbruch-Logik: " + ("AKTIV" if abbruch.get("abort") else "OK"),
+                 "#da3633" if abbruch.get("abort") else "#3fb950"),
+                (debt_mat.get("icon", "🟢"),
+                 f"Debt Maturity: {debt_mat.get('status', '—')}",
+                 debt_mat.get("color", "#3fb950")),
+                ("🟢" if not transf.get("active") else "🔵",
+                 f"Transformation: {'AKTIV (5T)' if transf.get('active') else 'Inaktiv'}",
+                 "#388bfd" if transf.get("active") else "#3fb950"),
                 ("☢️" if sbc_infection else ("⚠️" if sbc_warn else "🟢"),
-                 f"SBC-Infection: {'AKTIV ☢️ —20% Malus' if sbc_infection else ('WARNUNG ⚠️' if sbc_warn else 'OK')} ({pct(sbc_intensity)})",
+                 f"SBC-Infection: {'AKTIV ☢️' if sbc_infection else ('WARNUNG ⚠️' if sbc_warn else 'OK')} ({pct(sbc_intensity)})",
                  "#da3633" if sbc_infection else ("#d29922" if sbc_warn else "#3fb950")),
             ]
-            for icon, label, col in deckel_items:
+            for _di_icon, _di_label, _di_col in deckel_items:
                 st.markdown(
-                    f'<div style="display:flex;align-items:center;gap:8px;margin:4px 0;">'
-                    f'<span style="font-size:1.1em;">{icon}</span>'
-                    f'<span style="color:{col};font-size:0.85em;">{label}</span></div>',
+                    f'<div style="display:flex;align-items:center;gap:8px;margin:3px 0;">'
+                    f'<span style="font-size:1em;">{_di_icon}</span>'
+                    f'<span style="color:{_di_col};font-size:0.83em;">{_di_label}</span></div>',
                     unsafe_allow_html=True)
 
             if sbc_infection:
                 st.markdown(
                     '<div style="background:#da363322;border:1px solid #da3633;border-radius:6px;'
-                    'padding:8px 12px;margin:6px 0;">'
-                    '<b style="color:#da3633;">☢️ SBC-INFECTION AKTIV</b><br>'
-                    '<span style="color:#c9d1d9;font-size:0.82em;">'
+                    'padding:7px 11px;margin:6px 0;">'
+                    '<b style="color:#da3633;font-size:0.85em;">☢️ SBC-INFECTION AKTIV</b><br>'
+                    '<span style="color:#c9d1d9;font-size:0.78em;">'
                     'SBC > 15% Umsatz → Aktionärs-Verwässerung exzessiv.<br>'
-                    '→ Konfidenz-Deckel: max 🟡 MITTEL<br>'
-                    '→ Reaper Score: −2 Malus<br>'
-                    '→ Sizing: max Tier 3 (1–2%)<br>'
-                    '"Management bedient sich zuerst."</span></div>',
+                    '→ Konfidenz: max 🟡  → Score: −2  → Tier max 3 (1–2%)</span></div>',
                     unsafe_allow_html=True)
 
             if abbruch.get("abort"):
@@ -3680,8 +3867,31 @@ def _render_flag_check(j: dict, m: dict):
             elif abbruch.get("grenzfall"):
                 st.warning(f"⚠️ GRENZFALL: K={abbruch['k_met']}/{abbruch['k_basis']} — Begründungspflicht aktiv")
 
-            st.markdown("---")
             st.caption("Regel: Niedrigster aktiver Deckel gewinnt · 🔴 < 🟡 < 🟢")
+
+        # ── Rechte Spalte: Vollständige 9-Flag-Checkliste gem. JACK Spec ─────
+        with col2:
+            st.markdown("**⚑ FLAG-CHECK (JACK Spec — alle 9 Flags)**")
+            checklist = j.get("flags_checklist", [])
+            if not checklist:
+                st.caption("Daten nicht verfügbar")
+            else:
+                for _fc in checklist:
+                    _fc_color = _fc["color"]
+                    _fc_bg    = _fc_color + "18" if _fc["active"] else "#21262d"
+                    _fc_border= _fc_color if _fc["active"] else "#30363d"
+                    st.markdown(
+                        f'<div style="background:{_fc_bg};border:1px solid {_fc_border};'
+                        f'border-radius:5px;padding:5px 10px;margin:3px 0;">'
+                        f'<div style="display:flex;align-items:center;gap:7px;">'
+                        f'<span style="font-size:0.9em;min-width:18px;">{_fc["icon"]}</span>'
+                        f'<span style="color:{_fc_color};font-weight:700;font-size:0.78em;">'
+                        f'{_fc["name"]}</span>'
+                        f'</div>'
+                        f'<div style="color:#8b949e;font-size:0.71em;margin-top:2px;'
+                        f'padding-left:25px;">{_fc["reason"]}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True)
 
 
 # ── TRANSFORMATION PANEL ──────────────────────────────────────────────────────
@@ -3694,24 +3904,77 @@ def _render_transformation(m: dict, j: dict):
     with st.expander("🔄 TRANSFORMATION-PROTOKOLL", expanded=t.get("active", False)):
         col1, col2, col3 = st.columns(3)
         checks = [
-            (t.get("q1_fcf_path"), "① FCF-Pfad-Nachweis", "Bruttomarge ≥ 50% + Op. Leverage vorhanden", col1),
-            (t.get("q2_horizon"),  "② Zeithorizont",       f"Net Debt/EBITDA < 3x (aktuell: {xfmt(t.get('nd'))})", col2),
-            (t.get("q3_balance"),  "③ Bilanz-Schutz",      f"Current Ratio ≥ 1x (aktuell: {nfmt(t.get('cr'))})", col3),
+            (t.get("q1_fcf_path"), "① FCF-Pfad-Nachweis",
+             "Bruttomarge ≥ 50% + Op. Leverage vorhanden · [SEC]", col1),
+            (t.get("q2_horizon"),  "② Zeithorizont",
+             f"Net Debt/EBITDA < 3x (aktuell: {xfmt(t.get('nd'))}) · [SEC]", col2),
+            (t.get("q3_balance"),  "③ Bilanz-Schutz",
+             f"Current Ratio ≥ 1x (aktuell: {nfmt(t.get('cr'))}) · [SEC]", col3),
         ]
-        for ok, title, desc, col in checks:
-            icon  = "✅" if ok else "❌"
-            color = "#3fb950" if ok else "#da3633"
-            col.markdown(f'<div style="text-align:center;">'
-                         f'<div style="font-size:1.5em;">{icon}</div>'
-                         f'<div style="color:{color};font-weight:700;font-size:0.85em;">{title}</div>'
-                         f'<div style="color:#8b949e;font-size:0.75em;">{desc}</div></div>',
-                         unsafe_allow_html=True)
+        for _ok, _title, _desc, _col in checks:
+            _icon  = "✅" if _ok else "❌"
+            _color = "#3fb950" if _ok else "#da3633"
+            _col.markdown(
+                f'<div style="text-align:center;">'
+                f'<div style="font-size:1.5em;">{_icon}</div>'
+                f'<div style="color:{_color};font-weight:700;font-size:0.85em;">{_title}</div>'
+                f'<div style="color:#8b949e;font-size:0.73em;">{_desc}</div></div>',
+                unsafe_allow_html=True)
+
+        # PFLICHT-OUTPUT (vollständig gem. Spec)
+        st.markdown("---")
+        st.markdown("**📋 TRANSFORMATION-CHECK PFLICHT-OUTPUT**")
+
+        # Liquiditätspuffer schätzen: Current Ratio × (Revenue/4) = Quartalsumsatz
+        _cr_v  = t.get("cr")
+        _rev_v = m.get("revenue") or 0
+        _op_v  = abs(m.get("_capex") or 0) + abs(m.get("interest_expense") or 0)
+        if _cr_v and _rev_v > 0:
+            # Cash / (Monatliche Op-Costs Proxy = Revenue/12 * 0.8)
+            _monthly_costs = _rev_v / 12 * 0.8
+            _liq_monate = round((_cr_v * (_rev_v / 4)) / (_monthly_costs * 3), 1) if _monthly_costs > 0 else None
+        else:
+            _liq_monate = None
+
+        _debt_mat = j.get("debt_maturity", {})
+        _dmat_status = _debt_mat.get("status", "N/V")
+        _dmat_icon   = "✅ Kein Risiko" if _dmat_status == "OK" else ("⚠️ " + _dmat_status if _dmat_status != "N/V" else "N/V [SEC]")
+
+        _sym = "€" if m.get("currency") == "EUR" else "$"
+        _pflicht_rows = [
+            ("FCF-Pfad dokumentiert",   ("✅ Ja [SEC/IR]" if t.get("q1_fcf_path") else "❌ Nein"), "#3fb950" if t.get("q1_fcf_path") else "#da3633"),
+            ("Bruttomarge stabil",       (f"✅ {pct(t.get('gm'))} ≥ 50%" if (t.get("gm") or 0) >= 0.50 else f"❌ {pct(t.get('gm'))}"), "#3fb950" if (t.get("gm") or 0) >= 0.50 else "#da3633"),
+            ("Op. Leverage vorhanden",   ("✅ Ja [SEC]" if m.get("op_leverage") else "❌ Nein"), "#3fb950" if m.get("op_leverage") else "#da3633"),
+            ("FCF-Ziel (3J)",            "N/V [IR/Earnings Guidance manuell]", "#8b949e"),
+            (f"Net Debt/EBITDA",         (f"✅ {xfmt(t.get('nd'))}" if t.get("q2_horizon") else f"⚠️ {xfmt(t.get('nd'))}"), "#3fb950" if t.get("q2_horizon") else "#d29922"),
+            ("Liquiditätspuffer",        (f"≈ {_liq_monate:.0f} Monate [Proxy]" if _liq_monate else "N/V [SEC]"), "#3fb950" if (_liq_monate and _liq_monate >= 12) else "#d29922"),
+            ("Schulden-Fälligkeit",      _dmat_icon, "#3fb950" if _dmat_status == "OK" else "#d29922"),
+        ]
+        _rows_html = ""
+        for _pn, _pv, _pc in _pflicht_rows:
+            _rows_html += (
+                f'<tr>'
+                f'<td style="color:#8b949e;font-size:0.8em;padding:4px 8px;'
+                f'border-bottom:1px solid #21262d;">{_pn}</td>'
+                f'<td style="color:{_pc};font-size:0.8em;font-weight:600;padding:4px 8px;'
+                f'border-bottom:1px solid #21262d;">{_pv}</td>'
+                f'</tr>'
+            )
+        st.markdown(
+            f'<table style="width:100%;border-collapse:collapse;background:#161b22;border-radius:6px;">'
+            f'<tbody>{_rows_html}</tbody></table>',
+            unsafe_allow_html=True)
+        st.markdown("")
 
         if t.get("active"):
-            st.success("✅ TRANSFORMATION qualifiziert · K-BASIS: **5T** · FCF-Marge temporär als E-Kriterium")
+            st.success(
+                "✅ STATUS: QUALIFIZIERT · K-BASIS: **5T** · "
+                "FCF-Marge temporär E · Score max 6 · Tier max 3 · Konfidenz max 🟡")
         else:
-            st.error(f"❌ TRANSFORMATION nicht qualifiziert → K-BASIS: Standard\n\n" +
-                     "\n".join(f"• {r}" for r in t.get("reasons_fail", [])))
+            fail_txt = " | ".join(t.get("reasons_fail", ["Bedingung nicht erfüllt"]))
+            st.error(
+                f"❌ STATUS: NICHT QUALIFIZIERT → Standard K-BASIS\n\n"
+                f"Fehlende Bedingung: {fail_txt}")
 
 
 # ── MOAT-VERIFIKATION PANEL ───────────────────────────────────────────────────
