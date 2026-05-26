@@ -751,11 +751,18 @@ def _calc_piotroski(fin, bs, cf) -> dict:
 
 # ── DATA INTEGRITY SYSTEM ─────────────────────────────────────────────────────
 TAG_COLOR = {
-    "LIVE":      "#388bfd",   # live yfinance price
-    "VERIFIED":  "#3fb950",   # annual audited financials
-    "ESTIMATE":  "#d29922",   # analyst estimate / TTM extrapolation
-    "TRAINING":  "#8b949e",   # model knowledge cutoff / historical
-    "N/V":       "#da3633",   # not available
+    # ── JACK Daten-Hierarchie (Stufe 1–4) ─────────────────────────────────────
+    "S1":        "#3fb950",   # Stufe 1: SEC-Filings / Investor Relations (Primärquelle)
+    "S2":        "#79c0ff",   # Stufe 2: Koyfin / TIKR / StockAnalysis / Macrotrends
+    "S3":        "#e3b341",   # Stufe 3: marketscreener / Traderfox (nur Bestätigung)
+    "S4":        "#d29922",   # Stufe 4: [ESTIMATE] — nur E-Kriterien & WACC
+    "LIVE":      "#388bfd",   # Echtzeitkurs (yfinance)
+    "N/V":       "#da3633",   # nicht verfügbar
+    # ── Legacy-Aliases (Rückwärtskompatibilität) ───────────────────────────────
+    "VERIFIED":  "#3fb950",   # = S1
+    "ESTIMATE":  "#d29922",   # = S4
+    "TRAINING":  "#8b949e",   # Modell-Trainingsdaten
+    "SKIP":      "#8b949e",   # übersprungen (z.B. Beneish ohne SEC-Live)
 }
 
 def _tag(label: str) -> str:
@@ -884,31 +891,40 @@ def _detect_flags(m: dict) -> list[dict]:
 def _calc_daten_konfidenz(m: dict) -> dict:
     """
     Schritt 2B — Daten-Konfidenz-Assessment.
-    Bewertet jeden Schlüssel-Datenpunkt nach Quellenqualität.
-    Quelle: LIVE (Echtzeitkurs) | VERIFIED (Jahresabschluss) | ESTIMATE (TTM/Analyst) | N/V
+    JACK Daten-Hierarchie:
+      S1 = SEC-Filings / Investor Relations (Primärquelle)
+      S2 = Koyfin / TIKR / StockAnalysis / Macrotrends
+      S3 = marketscreener / Traderfox (nur Bestätigung)
+      S4 = [ESTIMATE] — nur E-Kriterien & WACC
+      LIVE = Echtzeitkurs
+      N/V  = nicht verfügbar
     """
     def _item(name: str, field, source_if_avail: str) -> dict:
         avail = field is not None
         tag   = source_if_avail if avail else "N/V"
-        conf  = "HOCH" if avail and tag in ("LIVE", "VERIFIED") else \
-                ("MITTEL" if avail and tag == "ESTIMATE" else "NIEDRIG")
+        conf  = "HOCH"   if avail and tag in ("LIVE", "S1", "S2") else \
+                "MITTEL"  if avail and tag in ("S3", "S4") else \
+                "NIEDRIG"
         return {"Datenpunkt": name, "✓": "✅" if avail else "❌",
                 "Quelle": tag, "Konfidenz": conf}
 
     piotr = m.get("piotroski", {})
+    _rev3 = (m.get("revenues") or [])
     items = [
-        _item("Kursdaten / Preis",      m.get("price"),            "LIVE"),
-        _item("Marktkapitalisierung",   m.get("mktcap"),           "LIVE"),
-        _item("Umsatz (3+ Jahre)",      (m.get("revenues") or [None if len(m.get("revenues",[]))<3 else 1])[0] if m.get("revenues") and len(m.get("revenues",[]))>=3 else None, "VERIFIED"),
-        _item("Brutto-/Op. Marge",      m.get("gross_margin"),     "VERIFIED"),
-        _item("FCF-Marge",              m.get("fcf_margin"),       "VERIFIED"),
-        _item("ROIC",                   m.get("roic"),             "VERIFIED"),
-        _item("Verschuldung (ND/EBITDA)",m.get("nd_ebitda"),       "VERIFIED"),
-        _item("Piotroski F-Score",      piotr.get("score") if piotr.get("details") else None, "VERIFIED"),
-        _item("EPS-CAGR",               m.get("eps_cagr"),         "ESTIMATE"),
-        _item("Rev-CAGR",               m.get("rev_cagr"),         "ESTIMATE"),
-        _item("SBC-Quote",              m.get("sbc_intensity"),    "ESTIMATE"),
-        _item("Analysten-Konsens",      m.get("target_price"),     "ESTIMATE"),
+        # S1 — SEC-Filings (via yfinance annual statements)
+        _item("Kursdaten / Preis",       m.get("price"),            "LIVE"),
+        _item("Marktkapitalisierung",    m.get("mktcap"),           "LIVE"),
+        _item("Umsatz (3+ Jahre)",       _rev3[0] if len(_rev3) >= 3 else None, "S1"),
+        _item("Brutto-/Op. Marge",       m.get("gross_margin"),     "S1"),
+        _item("FCF-Marge (real/SBC)",    m.get("real_fcf_margin"),  "S1"),
+        _item("ROIC",                    m.get("roic"),             "S1"),
+        _item("Verschuldung (ND/EBITDA)",m.get("nd_ebitda"),        "S1"),
+        _item("Piotroski F-Score",       piotr.get("score") if piotr.get("details") else None, "S1"),
+        _item("SBC-Quote",               m.get("sbc_intensity"),    "S1"),
+        # S4 — Estimates / berechnete Metriken
+        _item("EPS-CAGR",                m.get("eps_cagr"),         "S4"),
+        _item("Rev-CAGR",                m.get("rev_cagr"),         "S4"),
+        _item("Analysten-Konsens",       m.get("target_price"),     "S4"),
     ]
 
     available  = sum(1 for it in items if it["✓"] == "✅")
@@ -1525,62 +1541,63 @@ def _render_valuation_multiples(m: dict):
 # 🧬 DNA-CHECK — Vollständige Implementierung per JACK-Spezifikation
 # ══════════════════════════════════════════════════════════════════════════════
 _DNA_TAG_SOURCES = {
-    # K-Kriterien
-    "ROIC > 20%":        ("VERIFIED",  "Annual IS/BS"),
-    "FCF-Marge ≥ 20%":   ("VERIFIED",  "Annual CF"),
-    "FCF-Marge ≥ 15%":   ("VERIFIED",  "Annual CF"),
-    "Op. Leverage":       ("ESTIMATE",  "Derived from IS"),
-    "Piotroski ≥ 7":     ("VERIFIED",  "Annual IS/BS/CF"),
-    "Piotroski ≥ 5":     ("VERIFIED",  "Annual IS/BS/CF"),
-    "EPS-CAGR ≥ 12%":    ("ESTIMATE",  "Multi-year calc"),
-    "EPS-CAGR ≥ 10%":    ("ESTIMATE",  "Multi-year calc"),
-    "EPS-CAGR ≥ 15%":    ("ESTIMATE",  "Multi-year calc"),
-    "SBC < 10%":         ("VERIFIED",  "Annual CF"),
-    "SBC < 15%":         ("VERIFIED",  "Annual CF"),
-    "ROE > 12%":         ("VERIFIED",  "Annual IS/BS"),
-    "ROE ≥ 10%":         ("VERIFIED",  "Annual IS/BS"),
-    "ROIC > 15%":        ("VERIFIED",  "Annual IS/BS"),
-    "ROIC ≥ 10%":        ("VERIFIED",  "Annual IS/BS"),
-    "Bruttomarge ≥65%":  ("VERIFIED",  "Annual IS"),
-    "Rev-CAGR ≥ 15%":    ("ESTIMATE",  "Multi-year calc"),
-    "FCF > 0":           ("VERIFIED",  "Annual CF"),
-    "Op. Marge ≥ 40%":   ("VERIFIED",  "Annual IS"),
-    "Op. Marge ≥ 30%":   ("VERIFIED",  "Annual IS"),
-    "ND/EBITDA < 6x":    ("VERIFIED",  "Annual BS"),
-    "ND/EBITDA < 5x":    ("VERIFIED",  "Annual BS"),
-    "ND/EBITDA < 4x":    ("VERIFIED",  "Annual BS"),
-    "ND/EBITDA < 3x":    ("VERIFIED",  "Annual BS"),
-    "Capex ≤ 30%":       ("VERIFIED",  "Annual CF"),
-    "Div.-Rendite ≥4%":  ("LIVE",      "yfinance info"),
-    "Payout ≤ 80%":      ("ESTIMATE",  "yfinance info"),
-    "FCF-Marge ≥ 5%":    ("VERIFIED",  "Annual CF"),
-    "EV/EBITDA ≤ 8x":    ("ESTIMATE",  "Calc: EV/EBITDA"),
-    "ROA > 5%":          ("VERIFIED",  "Annual IS/BS"),
-    # E-Kriterien
-    "Bruttomarge ≥ 60%": ("VERIFIED",  "Annual IS"),
-    "Bruttomarge ≥ 40%": ("VERIFIED",  "Annual IS"),
-    "Bruttomarge ≥ 30%": ("VERIFIED",  "Annual IS"),
-    "Bruttomarge ≥ 70%": ("VERIFIED",  "Annual IS"),
-    "Op. Marge ≥ 20%":   ("VERIFIED",  "Annual IS"),
-    "Op. Marge ≥ 15%":   ("VERIFIED",  "Annual IS"),
-    "Op. Marge ≥ 10%":   ("VERIFIED",  "Annual IS"),
-    "Rev-CAGR ≥ 8%":     ("ESTIMATE",  "Multi-year calc"),
-    "Rev-CAGR ≥ 6%":     ("ESTIMATE",  "Multi-year calc"),
-    "Rev-CAGR ≥ 3%":     ("ESTIMATE",  "Multi-year calc"),
-    "Rev-CAGR ≥ 20%":    ("ESTIMATE",  "Multi-year calc"),
-    "Rev-CAGR ≥ 0%":     ("ESTIMATE",  "Multi-year calc"),
-    "Net Debt/EBITDA<2x":("VERIFIED",  "Annual BS"),
-    "ND/EBITDA < 2x":    ("VERIFIED",  "Annual BS"),
-    "Capex/Umsatz ≤ 5%": ("VERIFIED",  "Annual CF"),
-    "Capex ≤ 35%":       ("VERIFIED",  "Annual CF"),
-    "CCC < 30d":         ("ESTIMATE",  "Derived from BS"),
-    "CCC < 0d":          ("ESTIMATE",  "Derived from BS"),
-    "ROE ≥ 15%":         ("VERIFIED",  "Annual IS/BS"),
-    "ROA > 3%":          ("VERIFIED",  "Annual IS/BS"),
-    "P/B < 2x":          ("LIVE",      "yfinance info"),
-    "P/B < 1.5x":        ("LIVE",      "yfinance info"),
-    "Div.-Rendite ≥ 2%": ("LIVE",      "yfinance info"),
-    "EBITDA > 0":        ("VERIFIED",  "Annual IS+CF"),
+    # ── K-Kriterien — Stufe 1 (SEC/Annual Statements via yfinance) ──────────
+    "ROIC > 20%":        ("S1",  "Annual IS/BS"),
+    "FCF-Marge ≥ 20%":   ("S1",  "Annual CF · nach SBC"),
+    "FCF-Marge ≥ 15%":   ("S1",  "Annual CF · nach SBC"),
+    "FCF-Marge ≥ 5%":    ("S1",  "Annual CF · nach SBC"),
+    "FCF > 0":           ("S1",  "Annual CF · nach SBC"),
+    "Op. Leverage":      ("S4",  "Derived from IS"),
+    "Piotroski ≥ 7":     ("S1",  "Annual IS/BS/CF"),
+    "Piotroski ≥ 5":     ("S1",  "Annual IS/BS/CF"),
+    "EPS-CAGR ≥ 12%":    ("S4",  "Multi-year calc"),
+    "EPS-CAGR ≥ 10%":    ("S4",  "Multi-year calc"),
+    "EPS-CAGR ≥ 15%":    ("S4",  "Multi-year calc"),
+    "SBC < 10%":         ("S1",  "Annual CF"),
+    "SBC < 15%":         ("S1",  "Annual CF"),
+    "ROE > 12%":         ("S1",  "Annual IS/BS"),
+    "ROE ≥ 10%":         ("S1",  "Annual IS/BS"),
+    "ROIC > 15%":        ("S1",  "Annual IS/BS"),
+    "ROIC ≥ 10%":        ("S1",  "Annual IS/BS"),
+    "Bruttomarge ≥65%":  ("S1",  "Annual IS"),
+    "Rev-CAGR ≥ 15%":    ("S4",  "Multi-year calc"),
+    "Op. Marge ≥ 40%":   ("S1",  "Annual IS"),
+    "Op. Marge ≥ 30%":   ("S1",  "Annual IS"),
+    "ND/EBITDA < 6x":    ("S1",  "Annual BS"),
+    "ND/EBITDA < 5x":    ("S1",  "Annual BS"),
+    "ND/EBITDA < 4x":    ("S1",  "Annual BS"),
+    "ND/EBITDA < 3x":    ("S1",  "Annual BS"),
+    "Capex ≤ 30%":       ("S1",  "Annual CF"),
+    "Div.-Rendite ≥4%":  ("LIVE","yfinance info"),
+    "Payout ≤ 80%":      ("S4",  "yfinance info"),
+    "EV/EBITDA ≤ 8x":    ("S4",  "Calc: EV/EBITDA"),
+    "ROA > 5%":          ("S1",  "Annual IS/BS"),
+    # ── E-Kriterien ─────────────────────────────────────────────────────────
+    "Bruttomarge ≥ 60%": ("S1",  "Annual IS"),
+    "Bruttomarge ≥ 40%": ("S1",  "Annual IS"),
+    "Bruttomarge ≥ 30%": ("S1",  "Annual IS"),
+    "Bruttomarge ≥ 70%": ("S1",  "Annual IS"),
+    "Op. Marge ≥ 20%":   ("S1",  "Annual IS"),
+    "Op. Marge ≥ 15%":   ("S1",  "Annual IS"),
+    "Op. Marge ≥ 10%":   ("S1",  "Annual IS"),
+    "Rev-CAGR ≥ 8%":     ("S4",  "Multi-year calc"),
+    "Rev-CAGR ≥ 6%":     ("S4",  "Multi-year calc"),
+    "Rev-CAGR ≥ 3%":     ("S4",  "Multi-year calc"),
+    "Rev-CAGR ≥ 20%":    ("S4",  "Multi-year calc"),
+    "Rev-CAGR ≥ 0%":     ("S4",  "Multi-year calc"),
+    "Net Debt/EBITDA<2x":("S1",  "Annual BS"),
+    "ND/EBITDA < 2x":    ("S1",  "Annual BS"),
+    "Capex/Umsatz ≤ 5%": ("S1",  "Annual CF"),
+    "Capex ≤ 35%":       ("S1",  "Annual CF"),
+    "CCC < 30d":         ("S4",  "Derived from BS"),
+    "CCC < 0d":          ("S4",  "Derived from BS"),
+    "ROE ≥ 15%":         ("S1",  "Annual IS/BS"),
+    "ROA > 3%":          ("S1",  "Annual IS/BS"),
+    "P/B < 2x":          ("LIVE","yfinance info"),
+    "P/B < 1.5x":        ("LIVE","yfinance info"),
+    "Div.-Rendite ≥ 2%": ("LIVE","yfinance info"),
+    "EBITDA > 0":        ("S1",  "Annual IS+CF"),
+    "ROIC > 20%":        ("S1",  "Annual IS/BS"),
 }
 
 # Warn-Zonen per K/E-Kriterium (innerhalb XX% des Schwellenwerts)
@@ -3093,15 +3110,17 @@ def _render_daten_konfidenz(j: dict, m: dict):
                 f'</div>',
                 unsafe_allow_html=True)
 
-            # Rules
+            # Rules — JACK Daten-Hierarchie
             st.markdown(
                 '<div style="background:#161b22;border-radius:6px;padding:10px 14px;">'
                 '<span style="color:#8b949e;font-size:0.72em;font-weight:700;letter-spacing:1px;">'
-                'REGELN</span><br>'
-                '<span style="color:#c9d1d9;font-size:0.78em;line-height:1.7;">'
-                '• <b style="color:#3fb950;">VERIFIED</b> = SEC-geprüfter Jahresabschluss<br>'
+                'JACK DATEN-HIERARCHIE</span><br>'
+                '<span style="color:#c9d1d9;font-size:0.78em;line-height:1.8;">'
+                '• <b style="color:#3fb950;">S1</b> = SEC-Filings / Investor Relations<br>'
+                '• <b style="color:#79c0ff;">S2</b> = Koyfin / TIKR / StockAnalysis<br>'
+                '• <b style="color:#e3b341;">S3</b> = marketscreener / Traderfox<br>'
+                '• <b style="color:#d29922;">S4</b> = [ESTIMATE] nur E-Krit. &amp; WACC<br>'
                 '• <b style="color:#388bfd;">LIVE</b> = Echtzeitkurs (yfinance)<br>'
-                '• <b style="color:#d29922;">ESTIMATE</b> = TTM / Analyst-Schätzung<br>'
                 '• N/V → Konfidenz-Malus aktiv<br>'
                 '• Datenqualität &lt; 65% → ANALYSE STOPPEN'
                 '</span></div>',
