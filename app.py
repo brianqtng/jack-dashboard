@@ -3234,6 +3234,78 @@ def _render_globale_regeln(j: dict, m: dict):
                 f"Aktuell: **{rating}** · Score: {rs}/10 · K: {k_met}/{k_basis} · "
                 f"Konfidenz: {k_icon} {k_label}")
 
+        # ── KLASSE A / B / C Regelwerk (vollständig nach JACK-Spec) ──────────
+        st.markdown("---")
+        ca, cb, cc = st.columns(3)
+
+        with ca:
+            st.markdown(
+                '<div style="background:#3fb95022;border:1px solid #3fb950;border-radius:6px;'
+                'padding:8px 12px;margin-bottom:6px;">'
+                '<span style="color:#3fb950;font-weight:700;font-size:0.85em;">'
+                '🔒 KLASSE A — EISERN (nie brechen)</span></div>',
+                unsafe_allow_html=True)
+            for rule in [
+                ("[S1/S2/S3/S4/LIVE/N/V] bei jeder Kennzahl Pflicht", True),
+                ("[LIVE] nur mit Web-Search + URL — Fake-LIVE = Verstoß", True),
+                ("[S1] ≥ 2 Quellen · ≤ 10% Abweichung", True),
+                ("[S4/ESTIMATE] nur E-Kriterien & WACC — K: verboten", True),
+                ("K-Kriterium [N/V] → Sofort-Abbruch der Analyse", True),
+                ("Kein Wert ohne Quellenangabe", True),
+                ("Konfidenz 🟢/🟡/🔴 = Pflicht-Output jeder Analyse", True),
+                ("WACC dynamisch — kein fixer Wert", True),
+                ("FX-Pflicht bei nicht-EUR-Werten", True),
+                ("Kein KAUFEN Tier 1/2 bei 🔴 Konfidenz", True),
+                ("Kein KAUFEN ohne Exit-Strategie", True),
+                ("BEOBACHTEN: Abstauber-Limit + Trigger Pflicht", True),
+                ("KURS/NEWS-PFLICHT: Web-Search 72h vor Analyse", True),
+            ]:
+                txt, hard = rule
+                st.markdown(
+                    f'<div style="border-left:2px solid #3fb950;padding:2px 7px;margin:2px 0;">'
+                    f'<span style="color:#c9d1d9;font-size:0.75em;">• {txt}</span></div>',
+                    unsafe_allow_html=True)
+
+        with cb:
+            st.markdown(
+                '<div style="background:#d2992222;border:1px solid #d29922;border-radius:6px;'
+                'padding:8px 12px;margin-bottom:6px;">'
+                '<span style="color:#d29922;font-weight:700;font-size:0.85em;">'
+                '⚙️ KLASSE B — KONTEXTABHÄNGIG</span></div>',
+                unsafe_allow_html=True)
+            for rule, active in [
+                ("Beneish: nur wenn alle 8 [LIVE] → sonst SKIP",        True),
+                ("Zyklus-Overlay: nur bei zyklischen Sektoren",          True),
+                ("Piotroski-Override: nur bei Finanzsektor / Deep Value", True),
+                ("Python DCF: FULL DEEP DIVE + stabile Datenlage",       True),
+                ("Reverse-DCF primär: lückenhaft / Talsohle / neg. FCF", True),
+                ("Moat-Verifikation Vollformat: nur FULL DEEP DIVE",     True),
+                ("Management-Score Vollformat: nur FULL DEEP DIVE",      True),
+            ]:
+                col_r = "#d29922" if active else "#8b949e"
+                st.markdown(
+                    f'<div style="border-left:2px solid {col_r};padding:2px 7px;margin:2px 0;">'
+                    f'<span style="color:#c9d1d9;font-size:0.75em;">• {rule}</span></div>',
+                    unsafe_allow_html=True)
+
+        with cc:
+            st.markdown(
+                '<div style="background:#8b949e22;border:1px solid #8b949e;border-radius:6px;'
+                'padding:8px 12px;margin-bottom:6px;">'
+                '<span style="color:#8b949e;font-weight:700;font-size:0.85em;">'
+                '📋 KLASSE C — BEST EFFORT</span></div>',
+                unsafe_allow_html=True)
+            for rule in [
+                "Analyst-Konsens-Check",
+                "Insider-Käufe/-Verkäufe (6M)",
+                "Technical Alignment",
+                "Reverse-DCF Sanity Check (zusätzl. bei stabilem Full DCF)",
+            ]:
+                st.markdown(
+                    f'<div style="border-left:2px solid #8b949e;padding:2px 7px;margin:2px 0;">'
+                    f'<span style="color:#8b949e;font-size:0.75em;">• {rule}</span></div>',
+                    unsafe_allow_html=True)
+
 
 # ── FLAG-CHECK PANEL ──────────────────────────────────────────────────────────
 def _render_flag_check(j: dict, m: dict):
