@@ -1672,12 +1672,54 @@ def calc_jack(m: dict) -> dict:
     m["rule_of_40"] = _rule40
 
     # --- K-Kriterien (Gatekeeper) — mode-spezifisch ---
+    # SEC EDGAR Cross-Validation Map: K-Kriterium → relevanter CV-Schlüssel in m
+    _K_TO_CV = {
+        "ROIC > 20%":       "_cv_assets",    "ROIC > 15%":      "_cv_assets",
+        "ROIC ≥ 10%":       "_cv_assets",
+        "FCF-Marge ≥ 20%":  "_cv_revenue",   "FCF-Marge ≥ 15%": "_cv_revenue",
+        "FCF-Marge ≥ 5%":   "_cv_revenue",   "FCF > 0":         "_cv_revenue",
+        "Bruttomarge ≥65%": "_cv_gross",
+        "Op. Marge ≥ 40%":  "_cv_op_income", "Op. Marge ≥ 30%": "_cv_op_income",
+        "ND/EBITDA < 6x":   "_cv_assets",    "ND/EBITDA < 5x":  "_cv_assets",
+        "ND/EBITDA < 4x":   "_cv_assets",    "ND/EBITDA < 3x":  "_cv_assets",
+        "Piotroski ≥ 7":    "_cv_assets",    "Piotroski ≥ 5":   "_cv_assets",
+        "ROE > 12%":        "_cv_net_income","ROE ≥ 10%":       "_cv_net_income",
+        "ROA > 5%":         "_cv_assets",
+        "EPS-CAGR ≥ 12%":   "_cv_net_income","EPS-CAGR ≥ 10%": "_cv_net_income",
+        "EPS-CAGR ≥ 15%":   "_cv_net_income",
+        "Rev-CAGR ≥ 15%":   "_cv_revenue",
+        "Capex ≤ 30%":      "_cv_revenue",
+        "EV/EBITDA ≤ 8x":   "_cv_op_income",
+        # SBC: SEC hat SBC-Daten aber kein direkter CV → kein Upgrade
+    }
+
     K = {}
     def k(name, passed, val, avail=True):
-        # DATA-INTEGRITY: [ESTIMATE] für K-Kriterien VERBOTEN → immer TRAINING oder LIVE
+        # DATA-INTEGRITY: Basis-Tag immer TRAINING oder LIVE (nie ESTIMATE für K)
         _raw_tag = _DNA_TAG_SOURCES.get(name, ("TRAINING", "yfinance"))[0]
         _k_tag   = "TRAINING" if _raw_tag in ("S4", "ESTIMATE", "S1", "S2", "S3") else _raw_tag
-        K[name] = {"pass": passed, "val": val, "avail": avail, "tag": _k_tag}
+        _sec_cv  = None
+        _sec_note = ""
+
+        # SEC-Kreuzvalidierung: [TRAINING] → [VERIFIED] wenn SEC-Daten bestätigen
+        _cv_key = _K_TO_CV.get(name)
+        if _cv_key and m.get(_cv_key):
+            _cv      = m[_cv_key]
+            _cv_tag  = _cv.get("tag", "N/V")
+            _sec_cv  = _cv
+            if _cv_tag == "SAUBER":
+                # ≤10% Abweichung → SEC bestätigt → [VERIFIED]
+                _k_tag   = "VERIFIED"
+                _sec_note = "SEC [VERIFIED]"
+            elif _cv_tag == "DISKREPANZ":
+                # 10–20% → bleibt [TRAINING] aber mit Hinweis
+                _sec_note = "SEC DISKREPANZ"
+            else:
+                # >20% oder kein Vergleich
+                _sec_note = "SEC ERKLÄRUNGSPFLICHT" if _cv_tag == "ERKLÄRUNGSPFLICHT" else ""
+
+        K[name] = {"pass": passed, "val": val, "avail": avail,
+                   "tag": _k_tag, "sec_cv": _sec_cv, "sec_note": _sec_note}
 
     p  = m.get("piotroski", {})
     ps = p.get("score")
@@ -2356,12 +2398,37 @@ def _render_dna_check(j: dict, m: dict):
     }
     desc_text = _mode_desc.get(mode, f"K-BASIS = {k_basis}")
 
+    # SEC EDGAR Status für DNA-CHECK Header
+    _sec_m        = m.get("sec", {})
+    _sec_avail_h  = _sec_m.get("available", False)
+    _stufe        = m.get("_stufe", "3")
+    _stufe_lbl    = m.get("_stufe_label", "")
+    if _sec_avail_h:
+        _sec_hdr_col  = "#3fb950" if _stufe == "1+3" else "#d29922"
+        _sec_hdr_icon = "✅" if _stufe == "1+3" else "⚠️"
+        _sec_hdr_txt  = (f"{_sec_hdr_icon} SEC EDGAR aktiv (Stufe 1) — "
+                         f"CIK {_sec_m.get('cik','')} · "
+                         f"Kreuzvalidierung: {_stufe_lbl}")
+    else:
+        _sec_hdr_col = "#e3b341"
+        _sec_hdr_txt = ("⚠️ SEC EDGAR nicht verfügbar — nur yfinance (Stufe 3) · "
+                        "Nicht-US Ticker oder SEC-API nicht erreichbar")
+
     st.markdown(
         f'<div style="background:{mc}22;border:1px solid {mc};border-radius:6px;'
-        f'padding:8px 14px;margin:6px 0 10px;">'
+        f'padding:8px 14px;margin:6px 0 6px;">'
         f'<span style="color:#8b949e;font-size:0.72em;letter-spacing:1px;">AKTIVE K-BASIS</span><br>'
         f'<span style="color:{mc};font-weight:700;font-size:0.88em;">→ {desc_text}</span><br>'
         f'<span style="color:#8b949e;font-size:0.75em;">{mode_reason}</span>'
+        f'</div>',
+        unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="background:{_sec_hdr_col}15;border:1px solid {_sec_hdr_col};'
+        f'border-radius:5px;padding:5px 12px;margin:0 0 8px;font-size:0.75em;">'
+        f'<span style="color:{_sec_hdr_col};font-weight:700;">DATENQUELLEN-STATUS: </span>'
+        f'<span style="color:#c9d1d9;">{_sec_hdr_txt}</span>'
+        f'<span style="color:#8b949e;"> · [VERIFIED] = SEC + yfinance ≤10% Δ · '
+        f'[TRAINING] = nur Stufe 3</span>'
         f'</div>',
         unsafe_allow_html=True)
 
@@ -2394,16 +2461,33 @@ def _render_dna_check(j: dict, m: dict):
             f'</tr>'
         )
 
-    # K rows
+    # K rows — Tag aus K-Dict (dynamisch: VERIFIED wenn SEC bestätigt, sonst TRAINING/LIVE)
+    _sec_avail = (m.get("sec") or {}).get("available", False)
     for name, v in K.items():
         raw    = _dna_raw_val(name, m)
         st_str, st_col = _dna_status(name, v["pass"], raw)
         if not v.get("avail", True):
             st_str, st_col = "N/V", "#8b949e"
-        tag, src = _DNA_TAG_SOURCES.get(name, ("ESTIMATE", "Calculated"))
+        # Tag direkt aus K-Dict — dynamisch durch SEC-CV gesetzt
+        tag = v.get("tag", "TRAINING")
+        _, src = _DNA_TAG_SOURCES.get(name, ("TRAINING", "yfinance"))
+        # SEC-Kreuzvalidierungs-Note aufbauen
+        _sec_cv   = v.get("sec_cv")
+        _sec_note = v.get("sec_note", "")
+        if _sec_cv and _sec_cv.get("tag") != "N/V":
+            _cv_tag   = _sec_cv.get("tag", "")
+            _delta    = _sec_cv.get("delta_pct")
+            _delta_s  = f" Δ{_delta:.1%}" if _delta is not None else ""
+            _cv_icons = {"SAUBER": "✅", "DISKREPANZ": "⚠️", "ERKLÄRUNGSPFLICHT": "🔴"}
+            _cv_icon  = _cv_icons.get(_cv_tag, "")
+            note_k = f"SEC EDGAR{_delta_s} → {_cv_icon} {_cv_tag}"
+        elif _sec_avail and v.get("tag") == "TRAINING":
+            note_k = "SEC: kein direkter CV für diese Kennzahl"
+        else:
+            note_k = "Stufe 3 yfinance · keine SEC-Bestätigung"
         rows_html += _row("K", name, _k_threshold(name), v["val"],
                           tag, src, st_str, st_col,
-                          typ_color="#388bfd")
+                          note=note_k, typ_color="#388bfd")
 
     # E rows
     for name, v in E.items():
