@@ -5508,7 +5508,8 @@ def _calc_wacc(m: dict) -> dict:
 
 
 def _calc_dcf(m: dict, wacc_d: dict) -> dict:
-    fcf_base  = m.get("fcf") or 0
+    # JACK-Doktrin: Real FCF nach SBC bevorzugt
+    fcf_base  = m.get("real_fcf") or m.get("fcf") or 0
     revenue   = m.get("revenue") or 0
     shares    = m.get("shares") or 1
     wacc      = wacc_d.get("wacc", 0.09)
@@ -5520,8 +5521,11 @@ def _calc_dcf(m: dict, wacc_d: dict) -> dict:
     if fcf_base <= 0 or revenue <= 0:
         return {"available": False, "reason": "FCF negativ / Revenue fehlt → Reverse-DCF Primär [ESTIMATE]"}
 
-    g_phase = max(0.0, rev_cagr * 0.80)    # −20% Schätz-Malus (JACK-Doktrin)
+    # JACK-Doktrin: g = Rev-CAGR × 0.8 · Deckel: max. 20% · Boden: min. 5%
+    g_raw   = rev_cagr * 0.80
+    g_phase = max(0.05, min(0.20, g_raw))
     g_term  = 0.025
+    _capped = g_raw != g_phase   # Flag ob Cap/Floor aktiv war
 
     fcf_proj, fcf_t = [], fcf_base
     for _ in range(5):
@@ -5541,6 +5545,7 @@ def _calc_dcf(m: dict, wacc_d: dict) -> dict:
         "available": True, "iv": iv, "pv_fcf": pv_fcf, "pv_tv": pv_tv,
         "tv": tv, "tv_pct": tv_pct, "tv_warning": tv_pct > 0.70,
         "upside": up, "mos": mos, "g_phase": g_phase, "g_term": g_term,
+        "g_raw": g_raw, "g_capped": _capped,
         "fcf_proj": fcf_proj, "wacc": wacc, "sym": sym, "price": price,
     }
 
@@ -5583,44 +5588,82 @@ def _calc_reverse_dcf(m: dict, wacc_d: dict) -> dict:
 
 
 def _calc_stress_test(m: dict, wacc_d: dict) -> dict:
-    rev   = m.get("revenue") or 0
-    fcf_m = m.get("fcf_margin") or 0
-    rc    = m.get("rev_cagr") or 0.05
-    sh    = m.get("shares") or 1
-    price = m.get("price") or 0
-    nc    = m.get("net_cash") or 0
-    wacc  = wacc_d.get("wacc", 0.09)
-    sym   = "€" if m.get("currency") == "EUR" else "$"
-    g_t   = 0.025
+    # Echten FCF als Basis (Real FCF nach SBC bevorzugt, wie JACK-Doktrin)
+    fcf_base = m.get("real_fcf") or m.get("fcf") or 0
+    rev      = m.get("revenue") or 0
+    rc       = m.get("rev_cagr") or 0.05
+    sh       = m.get("shares") or 1
+    price    = m.get("price") or 0
+    nc       = m.get("net_cash") or 0
+    wacc     = wacc_d.get("wacc", 0.09)
+    sym      = "€" if m.get("currency") == "EUR" else "$"
+    g_t      = 0.025
 
-    def _iv(g, fm, w):
-        if rev <= 0: return 0
-        f = rev * fm; pv = 0
+    if fcf_base <= 0 or rev <= 0:
+        return {}   # kein sinnvoller Stress-Test möglich
+
+    # JACK-Doktrin: g Basis = Rev-CAGR × 0.8 · Cap 20% · Floor 5%
+    g_base = max(0.05, min(0.20, rc * 0.80))
+
+    # FCF-Marge aus realem FCF ableiten (konsistent mit DCF-Basis)
+    fcf_m_base = fcf_base / rev if rev > 0 else 0
+
+    def _iv(g, tv_mult, w):
+        """DCF mit 5J FCF-Projektion + Terminal Value. tv_mult skaliert TV (1.0 = Base)."""
+        if rev <= 0 or fcf_base <= 0: return 0
+        f = fcf_base; pv = 0
         for i in range(5):
-            f *= (1 + g); pv += f / (1 + w) ** (i + 1)
-        if w > g_t: pv += f * (1 + g_t) / (w - g_t) / (1 + w) ** 5
-        return (pv + nc) / sh if sh > 0 else 0
+            f *= (1 + g)
+            pv += f / (1 + w) ** (i + 1)
+        if w > g_t:
+            tv = f * (1 + g_t) / (w - g_t) * tv_mult
+            pv += tv / (1 + w) ** 5
+        return max(0, (pv + nc) / sh) if sh > 0 else 0
+
+    # JACK-Spec: Bear = g×50% + TV−25% | Base = g | Bull = g_voll (kein -20%) + TV+10%
+    g_bull = max(0.05, min(0.25, rc))        # Bull: volles Rev-CAGR, Cap 25%
+    g_base_val = g_base                      # Base: -20% Doktrin, Cap 20%, Floor 5%
+    g_bear = max(0.0,  g_base * 0.50)        # Bear: halbes Base-Wachstum
 
     scenarios = {
-        "🐂 Bull": {"g": rc + 0.05, "fm": fcf_m + 0.03, "wd": -0.005},
-        "📊 Base": {"g": rc * 0.80, "fm": fcf_m,        "wd":  0.000},
-        "🐻 Bear": {"g": max(0, rc - 0.08), "fm": max(0, fcf_m - 0.05), "wd": 0.015},
+        "🐂 Bull": {
+            "g": g_bull, "tv_mult": 1.10, "wacc_delta": -0.005,
+            "label": f"g={g_bull:.0%} (voll) · TV+10% · WACC-0.5pp",
+        },
+        "📊 Base": {
+            "g": g_base_val, "tv_mult": 1.00, "wacc_delta": 0.000,
+            "label": f"g={g_base_val:.0%} (−20% Doktrin) · TV Base",
+        },
+        "🐻 Bear": {
+            "g": g_bear, "tv_mult": 0.75, "wacc_delta": +0.015,
+            "label": f"g={g_bear:.0%} (×50%) · TV−25% · WACC+1.5pp",
+        },
     }
+
     res = {}
     for name, s in scenarios.items():
-        iv  = _iv(s["g"], max(0, s["fm"]), max(0.04, wacc + s["wd"]))
+        _w  = max(0.04, wacc + s["wacc_delta"])
+        _iv = _iv(s["g"], s["tv_mult"], _w)
         res[name] = {
-            "g": s["g"], "fm": s["fm"], "wacc": wacc + s["wd"],
-            "iv": iv, "upside": (iv / price - 1) if price and iv > 0 else None, "sym": sym,
+            "g":      s["g"],
+            "fm":     fcf_m_base,      # zur Anzeige (nicht für Berechnung)
+            "wacc":   _w,
+            "iv":     _iv,
+            "upside": (_iv / price - 1) if (price > 0 and _iv > 0) else None,
+            "sym":    sym,
+            "label":  s["label"],
         }
 
     bu = res["🐂 Bull"].get("upside") or 0
     be = res["🐻 Bear"].get("upside") or 0
-    if be < -0.30 and bu < 0.15:  rv, rc2 = "❌ Schlechtes Risiko/Rendite-Profil — JACK: Geld direkt verbrennen?", "#da3633"
-    elif bu > 0.30 and be > -0.25: rv, rc2 = "✅ Attraktives Risiko/Rendite-Profil", "#3fb950"
-    else:                          rv, rc2 = "⚖️ Moderates Risiko/Rendite-Profil",   "#d29922"
+    if be < -0.30 and bu < 0.15:
+        rv, rc2 = "❌ Schlechtes Risiko/Rendite-Profil — JACK: Geld direkt verbrennen?", "#da3633"
+    elif bu > 0.30 and be > -0.25:
+        rv, rc2 = "✅ Attraktives Risiko/Rendite-Profil", "#3fb950"
+    else:
+        rv, rc2 = "⚖️ Moderates Risiko/Rendite-Profil", "#d29922"
 
-    return {"scenarios": res, "rr_verdict": rv, "rr_color": rc2}
+    return {"scenarios": res, "rr_verdict": rv, "rr_color": rc2, "g_base": g_base}
 
 
 def _calc_konvergenz(m: dict, dcf: dict, rdcf: dict) -> dict:
@@ -5939,6 +5982,14 @@ def _render_wacc_dcf(j: dict, m: dict):
             c2.metric("Upside/Downside", f"{d['upside']:+.1%}" if d.get("upside") is not None else "N/V")
             c3.metric("MoS-Preis (−15%)", f"{sym}{d['mos']:.2f}" if d.get("mos") else "N/V")
 
+            if d.get("g_capped"):
+                _raw = d.get("g_raw", 0)
+                _cap_note = (
+                    f"⚠️ **g-CAP aktiv**: Rev-CAGR × 0.8 = {_raw:.1%} → "
+                    f"auf {d['g_phase']:.0%} begrenzt (JACK-Doktrin: max. 20% / min. 5%)"
+                )
+                st.info(_cap_note)
+
             if d["tv_warning"]:
                 st.error(f"⚠️ TV-WARNUNG (Klasse A #15): Terminal Value = {d['tv_pct']:.0%} des EV (>70%). "
                          "Intrinsic Value stark von weit-entfernten Cash Flows abhängig.")
@@ -5949,13 +6000,14 @@ def _render_wacc_dcf(j: dict, m: dict):
 | DCF-Komponente | Wert |
 |---|---|
 | FCF-Wachstum Phase (−20% Doktrin) | {pct(d["g_phase"])} |
+| g (roh, vor Cap/Floor) | {pct(d.get("g_raw", d["g_phase"]))} |
 | Terminal Growth Rate | {pct(d["g_term"])} |
 | WACC | {pct(d["wacc"])} |
 | PV FCF (5J) | {cap_fmt(d["pv_fcf"])} |
 | PV Terminal Value | {cap_fmt(d["pv_tv"])} |
 | TV-Anteil | {d["tv_pct"]:.0%} |
 """)
-            st.caption("[ESTIMATE] Projektion auf historischen Daten + Rev-CAGR")
+            st.caption("[ESTIMATE] Projektion auf Real FCF (nach SBC) + Rev-CAGR · Cap 20% · Floor 5%")
 
     with t3:
         r = rdcf_d
@@ -5971,24 +6023,29 @@ def _render_wacc_dcf(j: dict, m: dict):
 
     with t4:
         if not stress_d:
-            st.caption("N/V")
+            st.caption("N/V — FCF negativ oder Revenue fehlt")
         else:
             s = stress_d
-            st.markdown(f'<span style="color:{s["rr_color"]};font-weight:700;">{s["rr_verdict"]}</span>',
-                        unsafe_allow_html=True)
+            st.markdown(
+                f'<div style="font-weight:700;font-size:1.05em;color:{s["rr_color"]};">'
+                f'{s["rr_verdict"]}</div>',
+                unsafe_allow_html=True)
             rows = []
             for name, sv in s["scenarios"].items():
                 sym2 = sv.get("sym", "$")
                 rows.append({
-                    "Szenario": name,
-                    "Rev-Wachstum": pct(sv["g"]),
-                    "FCF-Marge": pct(sv["fm"]),
-                    "WACC": pct(sv["wacc"]),
-                    "IV/Aktie": f"{sym2}{sv['iv']:.2f}" if sv.get("iv", 0) > 0 else "n/b",
-                    "Upside": f"{sv['upside']:+.1%}" if sv.get("upside") is not None else "n/b",
+                    "Szenario":    name,
+                    "g (FCF)":     pct(sv["g"]),
+                    "WACC":        pct(sv["wacc"]),
+                    "IV/Aktie":    f"{sym2}{sv['iv']:.2f}" if sv.get("iv", 0) > 0 else "n/b",
+                    "± Kurs":      f"{sv['upside']:+.1%}" if sv.get("upside") is not None else "n/b",
+                    "Annahmen":    sv.get("label", ""),
                 })
             st.markdown(_html_table(pd.DataFrame(rows)), unsafe_allow_html=True)
-            st.caption("[ESTIMATE] Bear = −8pp Wachstum · −5pp FCF-Marge · +1.5pp WACC")
+            st.caption(
+                "[ESTIMATE] JACK-Spec: Bull = g_voll + TV+10% · Base = g×0.8 (Cap 20%, Floor 5%) · "
+                "Bear = g×50% + TV−25% + WACC+1.5pp · Basis: Real FCF (nach SBC)"
+            )
 
 
 def _render_beneish():
