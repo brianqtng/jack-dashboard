@@ -2344,6 +2344,21 @@ def _render_cockpit(symbol: str, m: dict, j: dict, hist: pd.DataFrame):
         f'</div>',
         unsafe_allow_html=True)
 
+    # ── Datenquellen-Hinweis ──────────────────────────────────────────────────
+    st.markdown(
+        '<div style="background:#161b22;border:1px solid #30363d;border-left:3px solid #d29922;'
+        'border-radius:4px;padding:5px 12px;margin-bottom:8px;display:flex;'
+        'align-items:center;gap:10px;">'
+        '<span style="color:#d29922;font-size:0.75em;">⚠</span>'
+        '<span style="color:#8b949e;font-size:0.72em;">'
+        '<b style="color:#d29922;">Datenquelle: yfinance (1 Quelle, kein Multi-Source-Abgleich).</b>'
+        ' Abweichungen zum JACK-Prompt (SEC · TIKR · StockAnalysis) möglich — '
+        'besonders bei FCF, ROIC, SBC und nicht-US Titeln. '
+        '<b style="color:#e6edf3;">Für Investitionsentscheidungen immer JACK-Prompt mit [VERIFIED]-Tags nutzen.</b>'
+        '</span>'
+        '</div>',
+        unsafe_allow_html=True)
+
     # ── 3-Spalten-Cockpit ─────────────────────────────────────────────────────
     _cl, _cm, _cr = st.columns([1, 2.2, 1.3], gap="small")
 
