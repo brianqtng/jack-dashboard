@@ -2740,18 +2740,41 @@ def _render_cockpit(symbol: str, m: dict, j: dict, hist: pd.DataFrame):
         f'</div>',
         unsafe_allow_html=True)
 
-    # ── Datenquellen-Hinweis ──────────────────────────────────────────────────
+    # ── Datenquellen-Hinweis (Hierarchie-Format) ─────────────────────────────
     st.markdown(
-        '<div style="background:#161b22;border:1px solid #30363d;border-left:3px solid #d29922;'
-        'border-radius:4px;padding:5px 12px;margin-bottom:8px;display:flex;'
-        'align-items:center;gap:10px;">'
-        '<span style="color:#d29922;font-size:0.75em;">⚠</span>'
-        '<span style="color:#8b949e;font-size:0.72em;">'
-        '<b style="color:#d29922;">Datenquelle: yfinance (1 Quelle, kein Multi-Source-Abgleich).</b>'
-        ' Abweichungen zum JACK-Prompt (SEC · TIKR · StockAnalysis) möglich — '
-        'besonders bei FCF, ROIC, SBC und nicht-US Titeln. '
-        '<b style="color:#e6edf3;">Für Investitionsentscheidungen immer JACK-Prompt mit [VERIFIED]-Tags nutzen.</b>'
-        '</span>'
+        '<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;'
+        'padding:8px 12px;margin-bottom:8px;">'
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
+        '<span style="color:#d29922;font-size:0.75em;font-weight:700;">⚠</span>'
+        '<span style="color:#d29922;font-size:0.75em;font-weight:700;">DATENQUELLE &amp; JACK-HIERARCHIE</span>'
+        '</div>'
+        '<table style="width:100%;border-collapse:collapse;font-size:0.72em;">'
+        '<tr>'
+        '<td style="padding:3px 8px;color:#e3b341;font-weight:700;white-space:nowrap;">'
+        '<span style="background:#e3b34122;border:1px solid #e3b341;border-radius:3px;'
+        'padding:1px 5px;">[TRAINING]</span> Stufe 3</td>'
+        '<td style="padding:3px 8px;color:#c9d1d9;">Yahoo Finance (yfinance) — Screening-Feed · Single-Source · '
+        '<b style="color:#d29922;">aktuell aktiv</b></td>'
+        '</tr><tr>'
+        '<td style="padding:3px 8px;color:#d29922;font-weight:700;white-space:nowrap;">'
+        '<span style="background:#d2992222;border:1px solid #d29922;border-radius:3px;'
+        'padding:1px 5px;">[ESTIMATE]</span> Stufe 4</td>'
+        '<td style="padding:3px 8px;color:#8b949e;">Schätzungen / WACC — Nur E-Kriterien</td>'
+        '</tr><tr>'
+        '<td style="padding:3px 8px;color:#79c0ff;font-weight:700;white-space:nowrap;">'
+        '<span style="background:#79c0ff22;border:1px solid #79c0ff;border-radius:3px;'
+        'padding:1px 5px;">[VERIFIED]</span> Stufe 2</td>'
+        '<td style="padding:3px 8px;color:#8b949e;">Koyfin · TIKR · StockAnalysis — manuell prüfen</td>'
+        '</tr><tr>'
+        '<td style="padding:3px 8px;color:#3fb950;font-weight:700;white-space:nowrap;">'
+        '<span style="background:#3fb95022;border:1px solid #3fb950;border-radius:3px;'
+        'padding:1px 5px;">[GOLD STANDARD]</span> Stufe 1</td>'
+        '<td style="padding:3px 8px;color:#8b949e;">SEC EDGAR · 10-K · IR — für Investment-Entscheidungen</td>'
+        '</tr></table>'
+        '<div style="margin-top:5px;color:#8b949e;font-size:0.68em;">'
+        '⚠ Abweichungen zum JACK-Prompt möglich (FCF · ROIC · SBC · Nicht-US Titel). '
+        'Für Investitionsentscheidungen: Stufe 1+2 manuell verifizieren.'
+        '</div>'
         '</div>',
         unsafe_allow_html=True)
 
@@ -4204,21 +4227,42 @@ def _render_daten_konfidenz(j: dict, m: dict):
                 f'</div>',
                 unsafe_allow_html=True)
 
-            # Rules — JACK Daten-Hierarchie
-            st.markdown(
-                '<div style="background:#161b22;border-radius:6px;padding:10px 14px;">'
-                '<span style="color:#8b949e;font-size:0.72em;font-weight:700;letter-spacing:1px;">'
-                'JACK DATEN-HIERARCHIE</span><br>'
-                '<span style="color:#c9d1d9;font-size:0.78em;line-height:1.8;">'
-                '• <b style="color:#3fb950;">S1</b> = SEC-Filings / Investor Relations<br>'
-                '• <b style="color:#79c0ff;">S2</b> = Koyfin / TIKR / StockAnalysis<br>'
-                '• <b style="color:#e3b341;">S3</b> = marketscreener / Traderfox<br>'
-                '• <b style="color:#d29922;">S4</b> = [ESTIMATE] nur E-Krit. &amp; WACC<br>'
-                '• <b style="color:#388bfd;">LIVE</b> = Echtzeitkurs (yfinance)<br>'
-                '• N/V → Konfidenz-Malus aktiv<br>'
-                '• Datenqualität &lt; 65% → ANALYSE STOPPEN'
-                '</span></div>',
-                unsafe_allow_html=True)
+            # Rules — JACK Daten-Hierarchie (Tabellenformat wie _render_daten_hierarchie)
+            _hier_rows = [
+                ("Stufe 1 ⭐", "SEC EDGAR / 10-K / IR",        "K-Kriterien · Primärquelle",    "#3fb950", "[GOLD STANDARD]"),
+                ("Stufe 2",    "Koyfin · TIKR · StockAnalysis","Sekundärquelle · Bestätigung",   "#79c0ff", "[VERIFIED]"),
+                ("Stufe 3",    "Yahoo Finance (yfinance)",      "Screening-Feed · Single-Source", "#e3b341", "[TRAINING]"),
+                ("Stufe 4",    "Schätzungen / WACC",            "Nur E-Kriterien & WACC",         "#d29922", "[ESTIMATE]"),
+            ]
+            _hier_html = (
+                '<span style="color:#8b949e;font-size:0.72em;font-weight:700;'
+                'letter-spacing:1px;display:block;margin-bottom:6px;">JACK DATEN-HIERARCHIE</span>'
+                '<table style="width:100%;border-collapse:collapse;font-size:0.75em;">'
+                '<tr>'
+                '<th style="background:#21262d;color:#8b949e;padding:5px 7px;text-align:left;'
+                'border:1px solid #30363d;">Stufe</th>'
+                '<th style="background:#21262d;color:#8b949e;padding:5px 7px;text-align:left;'
+                'border:1px solid #30363d;">Quelle</th>'
+                '<th style="background:#21262d;color:#8b949e;padding:5px 7px;text-align:left;'
+                'border:1px solid #30363d;">Tag</th>'
+                '</tr>'
+            )
+            for _s, _q, _u, _c, _tag in _hier_rows:
+                _hier_html += (
+                    f'<tr>'
+                    f'<td style="background:#161b22;color:{_c};padding:5px 7px;'
+                    f'border:1px solid #21262d;font-weight:700;">{_s}</td>'
+                    f'<td style="background:#161b22;color:#8b949e;padding:5px 7px;'
+                    f'border:1px solid #21262d;">{_q}<br>'
+                    f'<span style="font-size:0.85em;color:#6e7681;">{_u}</span></td>'
+                    f'<td style="background:#161b22;padding:5px 7px;border:1px solid #21262d;">'
+                    f'<span style="background:{_c}22;border:1px solid {_c};color:{_c};'
+                    f'border-radius:3px;padding:1px 5px;font-size:0.85em;font-weight:700;">'
+                    f'{_tag}</span></td>'
+                    f'</tr>'
+                )
+            _hier_html += '</table>'
+            st.markdown(_hier_html, unsafe_allow_html=True)
 
             if pct_a < 0.65:
                 st.error("⛔ Datenqualität < 65% — Analyse-Ergebnisse unzuverlässig!")
