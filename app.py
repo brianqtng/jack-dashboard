@@ -1,4 +1,4 @@
-"""JACK – The Moat Reaper  |  Yahoo Finance (Stufe 3) + SEC EDGAR (Stufe 1)"""
+"""JACK – The Moat Reaper  |  Screening-Feed: Yahoo Finance (Stufe 3)  |  Primärquelle: SEC EDGAR / IR (Stufe 1)"""
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -953,12 +953,12 @@ def calc_metrics(raw: dict) -> dict:  # noqa: C901
             for k in ["revenue", "net_income"]
         )
         m["_stufe"] = "1+3" if cv_ok else "3"  # Daten-Stufe
-        m["_stufe_label"] = "[STUFE 1+3] SEC+Yahoo [VERIFIED]" if cv_ok else "[STUFE 3] Yahoo Finance"
+        m["_stufe_label"] = "[STUFE 1+3] SEC EDGAR + Yahoo Finance [VERIFIED]" if cv_ok else "[STUFE 3] Yahoo Finance — Bitte Stufe 1/2 prüfen"
     else:
         m["_stufe"] = "3"
-        m["_stufe_label"] = "[STUFE 3] Yahoo Finance"
+        m["_stufe_label"] = "[STUFE 3] Yahoo Finance — Screening-Feed"
         if "." in raw.get("symbol", ""):
-            m["_stufe_label"] += " (Nicht-US: SEC nicht verfügbar)"
+            m["_stufe_label"] += " (Nicht-US)"
 
     return m
 
@@ -6610,11 +6610,17 @@ def _render_daten_hierarchie(m: dict = None):
     with st.expander("🗂️ DATEN-HIERARCHIE & QUELLEN-STATUS", expanded=False):
 
         # Aktive Daten-Stufe Banner
-        s_color = "#3fb950" if stufe == "1+3" else "#d29922"
+        _is_verified = (stufe == "1+3")
+        s_color  = "#3fb950" if _is_verified else "#d29922"
+        _hint    = ("SEC EDGAR Kreuzvalidierung aktiv — Daten haben erhöhte Verlässlichkeit."
+                    if _is_verified else
+                    "Dieses Dashboard nutzt Yahoo Finance (Stufe 3) als automatischen Screening-Feed. "
+                    "Für JACK-konforme Analyse bitte Stufe 1 (SEC / IR) und Stufe 2 (Koyfin / StockAnalysis) manuell prüfen.")
         st.markdown(
             f'<div style="background:{s_color}22;border:1px solid {s_color};border-radius:6px;'
             f'padding:8px 14px;margin-bottom:10px;">'
-            f'<span style="color:{s_color};font-weight:700;">AKTIVE DATEN-STUFE: {stufe_lbl}</span>'
+            f'<span style="color:{s_color};font-weight:700;">AKTIVE DATEN-STUFE: {stufe_lbl}</span><br>'
+            f'<span style="color:#8b949e;font-size:0.82em;">{_hint}</span>'
             f'</div>', unsafe_allow_html=True)
 
         # Stufen-Tabelle mit Live-Status
@@ -6628,15 +6634,15 @@ def _render_daten_hierarchie(m: dict = None):
   <th style="background:#21262d;color:#8b949e;padding:8px 12px;text-align:left;border:1px solid #30363d;">Tag</th>
 </tr>
 <tr>
-  <td style="background:#161b22;color:#e6edf3;padding:7px 12px;border:1px solid #21262d;font-weight:700;">Stufe 1</td>
-  <td style="background:#161b22;color:#e6edf3;padding:7px 12px;border:1px solid #21262d;">SEC EDGAR / 10-K Filings</td>
-  <td style="background:#161b22;color:#8b949e;padding:7px 12px;border:1px solid #21262d;">Primärquelle · K-Kriterien</td>
+  <td style="background:#161b22;color:#e6edf3;padding:7px 12px;border:1px solid #21262d;font-weight:700;">Stufe 1 ⭐</td>
+  <td style="background:#161b22;color:#e6edf3;padding:7px 12px;border:1px solid #21262d;">SEC EDGAR / 10-K / Investor Relations</td>
+  <td style="background:#161b22;color:#8b949e;padding:7px 12px;border:1px solid #21262d;">Primärquelle · JACK-Doktrin · K-Kriterien</td>
   <td style="background:#161b22;padding:7px 12px;border:1px solid #21262d;">
-    <span style="color:{s1_color};font-weight:700;">{s1_icon} {'AKTIV' if sec_avail else 'N/V'}</span>
+    <span style="color:#d29922;font-weight:700;">📋 Manuell prüfen</span>
     <span style="color:#8b949e;font-size:0.8em;"> {s1_note}</span>
   </td>
   <td style="background:#161b22;padding:7px 12px;border:1px solid #21262d;">
-    <span style="background:#3fb95022;border:1px solid #3fb950;color:#3fb950;border-radius:3px;padding:1px 6px;font-size:0.8em;">[VERIFIED]</span>
+    <span style="background:#3fb95022;border:1px solid #3fb950;color:#3fb950;border-radius:3px;padding:1px 6px;font-size:0.8em;">[GOLD STANDARD]</span>
   </td>
 </tr>
 <tr>
@@ -6652,13 +6658,13 @@ def _render_daten_hierarchie(m: dict = None):
 </tr>
 <tr>
   <td style="background:#161b22;color:#e6edf3;padding:7px 12px;border:1px solid #21262d;font-weight:700;">Stufe 3</td>
-  <td style="background:#161b22;color:#e6edf3;padding:7px 12px;border:1px solid #21262d;">Yahoo Finance (yfinance) ← Haupt-Feed</td>
-  <td style="background:#161b22;color:#8b949e;padding:7px 12px;border:1px solid #21262d;">Alle Metriken · Kurs [LIVE]</td>
+  <td style="background:#161b22;color:#e6edf3;padding:7px 12px;border:1px solid #21262d;">Yahoo Finance (yfinance) — Screening-Feed</td>
+  <td style="background:#161b22;color:#8b949e;padding:7px 12px;border:1px solid #21262d;">Automatisches Screening · Kurs [LIVE] · Single-Source</td>
   <td style="background:#161b22;padding:7px 12px;border:1px solid #21262d;">
-    <span style="color:#3fb950;font-weight:700;">✅ AKTIV</span>
+    <span style="color:#d29922;font-weight:700;">⚠️ AKTIV (Single-Source)</span>
   </td>
   <td style="background:#161b22;padding:7px 12px;border:1px solid #21262d;">
-    <span style="background:#3fb95022;border:1px solid #3fb950;color:#3fb950;border-radius:3px;padding:1px 6px;font-size:0.8em;">[VERIFIED*]</span>
+    <span style="background:#d2992222;border:1px solid #d29922;color:#d29922;border-radius:3px;padding:1px 6px;font-size:0.8em;">[SCREENING]</span>
   </td>
 </tr>
 <tr>
@@ -6702,7 +6708,7 @@ def _render_daten_hierarchie(m: dict = None):
                 st.markdown(f"[📉 TIKR](https://app.tikr.com/)")
 
             with col3:
-                st.markdown("**Stufe 3 — Bestätigung:**")
+                st.markdown("**Stufe 3 — Screening (Single-Source):**")
                 st.markdown(f"[🦁 Yahoo Finance](https://finance.yahoo.com/quote/{sym}/financials/)")
                 st.markdown(f"[📰 MarketScreener](https://www.marketscreener.com/)")
                 st.markdown(f"[🦊 Traderfox](https://traderfox.de/)")
