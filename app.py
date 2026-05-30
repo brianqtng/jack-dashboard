@@ -762,22 +762,41 @@ def calc_metrics(raw: dict) -> dict:  # noqa: C901
                 _dh.index = _dh.index.tz_localize(None)
             annual = _dh.resample("YE").sum()
             annual = annual[annual > 0]
-            m["div_annual"] = annual.tolist()[::-1]   # neuestes zuerst
+            _ann_list = annual.tolist()
+            m["div_annual"] = _ann_list[::-1]          # neuestes zuerst
             m["div_years"]  = len(annual)
-            # Div-CAGR (5J)
-            if len(annual) >= 5:
-                _v5 = annual.tolist()
-                _v5 = [v for v in _v5 if v > 0]
-                if len(_v5) >= 5 and _v5[-5] > 0:
-                    m["div_cagr5"] = (_v5[0] / _v5[-5]) ** (1/4) - 1
-            elif len(annual) >= 2:
-                _va = annual.tolist()
-                if _va[-1] > 0:
-                    m["div_cagr5"] = (_va[0] / _va[-1]) ** (1/(len(_va)-1)) - 1
+            # Div-CAGR 1J / 3J / 5J / 10J
+            _pos = [v for v in _ann_list if v > 0]
+            if len(_pos) >= 2:
+                m["div_cagr1"] = (_pos[0] / _pos[-2]) - 1 if len(_pos) >= 2 else None
+            if len(_pos) >= 3:
+                m["div_cagr3"] = (_pos[0] / _pos[-3]) ** (1/2) - 1
+            if len(_pos) >= 5:
+                m["div_cagr5"] = (_pos[0] / _pos[-5]) ** (1/4) - 1
+            elif len(_pos) >= 2:
+                m["div_cagr5"] = (_pos[0] / _pos[-1]) ** (1/(len(_pos)-1)) - 1
+            if len(_pos) >= 10:
+                m["div_cagr10"] = (_pos[0] / _pos[-10]) ** (1/9) - 1
+            # Ausschüttungsintervall (aus raw Zeitreihe schätzen)
+            if len(_dh) >= 2:
+                _gaps = _dh.index.to_series().diff().dropna().dt.days
+                _med_gap = int(_gaps.median()) if not _gaps.empty else 0
+                if _med_gap <= 35:
+                    m["div_interval"] = "Monatlich"
+                elif _med_gap <= 100:
+                    m["div_interval"] = "Quartalsweise"
+                elif _med_gap <= 200:
+                    m["div_interval"] = "Halbjährlich"
+                else:
+                    m["div_interval"] = "Jährlich"
+            # Nächste Ausschüttung (letzte bekannte Einzelzahlung)
+            _last_pay = float(_dh.iloc[-1]) if len(_dh) >= 1 else None
+            if _last_pay:
+                m["div_next_est"] = _last_pay
             # Kürzungs-Historie
             _cuts = 0
             _prev = None
-            for _dv in reversed(annual.tolist()):
+            for _dv in reversed(_ann_list):
                 if _prev is not None and _dv < _prev * 0.95:
                     _cuts += 1
                 _prev = _dv
@@ -2218,6 +2237,145 @@ def _render_eps_beats(eps_hist: pd.DataFrame):
         pass
     st.markdown("")
 
+# ── DIVIDENDEN-CHECK (auto-trigger wenn Dividende gezahlt) ────────────────────
+def _render_dividenden_check(m: dict):
+    """Zeigt Dividenden-Analyse nur wenn das Unternehmen eine Dividende zahlt."""
+    div_yield = m.get("dividend") or 0
+    div_rate  = m.get("div_rate")
+    if not div_yield and not div_rate:
+        return   # kein Dividendentitel → SKIP
+
+    sym       = "€" if m.get("currency") == "EUR" else "$"
+    payout    = m.get("payout_ratio")
+    interval  = m.get("div_interval", "N/V")
+    cagr1     = m.get("div_cagr1")
+    cagr3     = m.get("div_cagr3")
+    cagr5     = m.get("div_cagr5")
+    cagr10    = m.get("div_cagr10")
+    next_est  = m.get("div_next_est")
+    cuts      = m.get("div_cuts", 0)
+    ex_div    = m.get("ex_dividend")
+    div_hist  = m.get("div_hist_raw", pd.Series(dtype=float))
+
+    # Payout-Farbe
+    _pc = "#3fb950" if (payout or 0) < 0.60 else ("#d29922" if (payout or 0) < 0.85 else "#da3633")
+    # Cuts-Farbe
+    _cc = "#3fb950" if cuts == 0 else ("#d29922" if cuts <= 1 else "#da3633")
+
+    st.markdown(
+        '<div style="color:#8b949e;font-size:0.7em;font-weight:700;text-transform:uppercase;'
+        'letter-spacing:1.5px;padding:4px 0 6px 0;border-bottom:1px solid #21262d;'
+        'margin-bottom:10px;">💰 DIVIDENDEN-CHECK</div>',
+        unsafe_allow_html=True)
+
+    # ── Metriken-Grid (2×3) ──────────────────────────────────────────────────
+    _d1, _d2, _d3 = st.columns(3)
+    _d4, _d5, _d6 = st.columns(3)
+
+    def _dtile(col, label, value, color="#e6edf3"):
+        col.markdown(
+            f'<div class="mmtile">'
+            f'<div class="mmlabel">{label}</div>'
+            f'<div class="mmvalue" style="color:{color};">{value}</div>'
+            f'</div>',
+            unsafe_allow_html=True)
+
+    _dtile(_d1, "Dividende TTM",
+           f"{sym}{div_rate:.3f}" if div_rate else "N/V", "#e6edf3")
+    _dtile(_d2, "Dividendenrendite",
+           f"{div_yield:.2%}" if div_yield else "N/V",
+           "#3fb950" if (div_yield or 0) >= 0.03 else "#d29922")
+    _dtile(_d3, "Ausschüttungsquote",
+           f"{payout:.1%}" if payout else "N/V", _pc)
+    _dtile(_d4, "Intervall", interval, "#79c0ff")
+    _dtile(_d5, "DGR 3J (CAGR)",
+           f"{cagr3:.2%}" if cagr3 else "N/V",
+           "#3fb950" if (cagr3 or 0) >= 0.05 else "#d29922")
+    _dtile(_d6, "Nächste (Schätzung)",
+           f"{sym}{next_est:.3f}" if next_est else "N/V", "#e6edf3")
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+    # ── Wachstums-Sektion ────────────────────────────────────────────────────
+    def _growth_label(cagr):
+        if cagr is None:
+            return "–", "#8b949e"
+        if cagr < 0:
+            return "Kürzung", "#da3633"
+        if cagr < 0.03:
+            return "Niedriges Wachstum", "#d29922"
+        if cagr < 0.08:
+            return "Moderates Wachstum", "#79c0ff"
+        return "Starkes Wachstum", "#3fb950"
+
+    growth_rows = [
+        ("1 Jahr",   cagr1),
+        ("3 Jahre",  cagr3),
+        ("5 Jahre",  cagr5),
+        ("10 Jahre", cagr10),
+    ]
+
+    _ghtml = (
+        '<div style="background:#0d1117;border:1px solid #21262d;border-radius:6px;'
+        'padding:10px 14px;margin-bottom:10px;">'
+        '<div style="color:#8b949e;font-size:0.65em;font-weight:700;text-transform:uppercase;'
+        'letter-spacing:1px;margin-bottom:8px;">Wachstum (CAGR)</div>'
+    )
+    for _yr, _cg in growth_rows:
+        _lbl, _lc = _growth_label(_cg)
+        _val_str = f"{_cg:.2%}" if _cg is not None else "–"
+        _arrow   = "↗" if (_cg or 0) > 0 else ("↘" if (_cg or 0) < 0 else "–")
+        _ghtml += (
+            f'<div style="display:flex;align-items:center;justify-content:space-between;'
+            f'padding:5px 0;border-bottom:1px solid #161b22;">'
+            f'<span style="color:#e6edf3;font-weight:700;font-size:0.88em;min-width:60px;">{_yr}</span>'
+            f'<span style="background:#30363d;border-radius:12px;padding:2px 10px;'
+            f'font-size:0.72em;color:{_lc};">{_lbl}</span>'
+            f'<span style="color:{_lc};font-weight:700;font-size:0.9em;font-family:monospace;">'
+            f'{_arrow} {_val_str}</span>'
+            f'</div>'
+        )
+    _ghtml += '</div>'
+    st.markdown(_ghtml, unsafe_allow_html=True)
+
+    # ── Dividenden-Historie (letzte 6 Zahlungen) ────────────────────────────
+    if not div_hist.empty:
+        try:
+            _dh2 = div_hist.copy()
+            if hasattr(_dh2.index, "tz") and _dh2.index.tz is not None:
+                _dh2.index = _dh2.index.tz_localize(None)
+            _recent = _dh2[_dh2 > 0].sort_index(ascending=False).head(6)
+            if not _recent.empty:
+                st.markdown(
+                    '<div style="color:#8b949e;font-size:0.65em;font-weight:700;'
+                    'text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">'
+                    'Letzte Ausschüttungen</div>',
+                    unsafe_allow_html=True)
+                _hhtml = '<div style="background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:8px 14px;">'
+                for _dt, _dv in _recent.items():
+                    _dt_str = str(_dt)[:7]   # JJJJ-MM
+                    _hhtml += (
+                        f'<div style="display:flex;justify-content:space-between;'
+                        f'align-items:center;padding:4px 0;border-bottom:1px solid #161b22;">'
+                        f'<span style="color:#8b949e;font-size:0.82em;">🔵 {_dt_str}</span>'
+                        f'<span style="color:#e6edf3;font-weight:700;font-family:monospace;">'
+                        f'{sym}{_dv:.4f}</span>'
+                        f'</div>'
+                    )
+                _hhtml += '</div>'
+                st.markdown(_hhtml, unsafe_allow_html=True)
+        except Exception:
+            pass
+
+    # ── Warnungen ────────────────────────────────────────────────────────────
+    if cuts > 0:
+        st.warning(f"⚠️ {cuts}x Dividendenkürzung in der Historie — Stabilitätsprüfung empfohlen.")
+    if (payout or 0) > 0.90:
+        st.warning("⚠️ Ausschüttungsquote > 90% — Nachhaltigkeit fraglich.")
+    if ex_div:
+        st.caption(f"Ex-Dividende Datum: {str(ex_div)[:10]}")
+
+
 # ── COCKPIT: Drama-Chart (Plotly) ─────────────────────────────────────────────
 def _make_price_chart(symbol: str, hist: pd.DataFrame, m: dict) -> "go.Figure":
     """Dramatischer Kurs-Chart im Bloomberg-Terminal-Stil."""
@@ -2632,6 +2790,11 @@ def render(symbol: str, m: dict, j: dict, hist: pd.DataFrame, eps_hist: pd.DataF
     # ── Bewertungs-Multiples (Screenshot 3) ──────────────────────────────────
     _render_valuation_multiples(m)
     st.markdown("---")
+
+    # ── 💰 DIVIDENDEN-CHECK (auto-trigger bei Dividendentiteln) ──────────────
+    _render_dividenden_check(m)
+    if m.get("dividend") or m.get("div_rate"):
+        st.markdown("---")
 
     # ── EPS Beat/Miss (Screenshot 1 – EPS-Teil) ──────────────────────────────
     _render_eps_beats(eps_hist)
