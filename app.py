@@ -763,20 +763,46 @@ def calc_metrics(raw: dict) -> dict:  # noqa: C901
             annual = _dh.resample("YE").sum()
             annual = annual[annual > 0]
             _ann_list = annual.tolist()
-            m["div_annual"] = _ann_list[::-1]          # neuestes zuerst
+            m["div_annual"] = _ann_list[::-1]          # neuestes zuerst (für Anzeige)
             m["div_years"]  = len(annual)
-            # Div-CAGR 1J / 3J / 5J / 10J
-            _pos = [v for v in _ann_list if v > 0]
-            if len(_pos) >= 2:
-                m["div_cagr1"] = (_pos[0] / _pos[-2]) - 1 if len(_pos) >= 2 else None
-            if len(_pos) >= 3:
-                m["div_cagr3"] = (_pos[0] / _pos[-3]) ** (1/2) - 1
-            if len(_pos) >= 5:
-                m["div_cagr5"] = (_pos[0] / _pos[-5]) ** (1/4) - 1
-            elif len(_pos) >= 2:
-                m["div_cagr5"] = (_pos[0] / _pos[-1]) ** (1/(len(_pos)-1)) - 1
-            if len(_pos) >= 10:
-                m["div_cagr10"] = (_pos[0] / _pos[-10]) ** (1/9) - 1
+
+            # ── Div-CAGR: index-basiert (robuster gegen Lücken/COVID-Ausfälle) ──
+            # annual ist pandas Series mit DatetimeIndex, chronologisch (ältestes zuerst)
+            # Neuester Wert = annual.iloc[-1], ältester = annual.iloc[0]
+            _latest_yr  = annual.index[-1].year
+            _latest_val = annual.iloc[-1]
+
+            def _div_cagr(n_years):
+                """CAGR über n_years: nutzt echte Jahresdifferenz statt Listenposition."""
+                _target_yr = _latest_yr - n_years
+                # Letzten verfügbaren Wert <= target_year holen
+                _cands = annual[annual.index.year <= _target_yr]
+                if _cands.empty or _cands.iloc[-1] <= 0 or _latest_val <= 0:
+                    return None
+                _base_val  = _cands.iloc[-1]
+                _actual_n  = _latest_yr - _cands.index[-1].year
+                if _actual_n <= 0:
+                    return None
+                return (_latest_val / _base_val) ** (1.0 / _actual_n) - 1
+
+            # 1J: einfaches YoY (neuestes / vorjahr)
+            _prev_yr_cands = annual[annual.index.year < _latest_yr]
+            if not _prev_yr_cands.empty and _prev_yr_cands.iloc[-1] > 0 and _latest_val > 0:
+                _actual_gap = _latest_yr - _prev_yr_cands.index[-1].year
+                if _actual_gap > 0:
+                    m["div_cagr1"] = (_latest_val / _prev_yr_cands.iloc[-1]) ** (1.0 / _actual_gap) - 1
+
+            _c3 = _div_cagr(3)
+            if _c3 is not None:
+                m["div_cagr3"] = _c3
+
+            _c5 = _div_cagr(5)
+            if _c5 is not None:
+                m["div_cagr5"] = _c5
+
+            _c10 = _div_cagr(10)
+            if _c10 is not None:
+                m["div_cagr10"] = _c10
             # Ausschüttungsintervall (aus raw Zeitreihe schätzen)
             if len(_dh) >= 2:
                 _gaps = _dh.index.to_series().diff().dropna().dt.days
