@@ -2641,6 +2641,7 @@ def render(symbol: str, m: dict, j: dict, hist: pd.DataFrame, eps_hist: pd.DataF
             unsafe_allow_html=True)
 
         # Piotroski detail breakdown
+        p = m.get("piotroski", {})
         st.markdown(f"**Piotroski F-Score: {p.get('score','N/V')}/{p.get('max',8)}**")
         pdet = p.get("details", {})
         if pdet:
