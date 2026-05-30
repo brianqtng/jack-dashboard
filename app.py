@@ -52,6 +52,73 @@ html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {
 .mlabel { font-size:0.65em; color:#8b949e; text-transform:uppercase; letter-spacing:0.9px; }
 .mvalue { font-size:1.25em; font-weight:700; color:#e6edf3; margin-top:2px; }
 
+/* ── Dashboard Cockpit Panels ── */
+.cockpit-panel {
+    background: #0d1117;
+    border: 1px solid #21262d;
+    border-radius: 8px;
+    padding: 14px 16px;
+    height: 100%;
+}
+.cockpit-panel-green  { border-color: #238636; box-shadow: 0 0 12px #23863620; }
+.cockpit-panel-yellow { border-color: #d29922; box-shadow: 0 0 12px #d2992220; }
+.cockpit-panel-red    { border-color: #da3633; box-shadow: 0 0 12px #da363320; }
+
+/* ── Price Display ── */
+.price-hero { font-family: 'Courier New', monospace; font-size: 2em; font-weight: 900; letter-spacing: -1px; line-height: 1; }
+.price-change-pos { color: #3fb950; font-size: 0.9em; font-weight: 700; }
+.price-change-neg { color: #da3633; font-size: 0.9em; font-weight: 700; }
+
+/* ── Rating Hero ── */
+.rating-hero { font-size: 1.8em; font-weight: 900; letter-spacing: 2px; text-align: center; padding: 10px 0 4px 0; }
+.rating-KAUFEN     { color: #3fb950; text-shadow: 0 0 20px #3fb95055; }
+.rating-BEOBACHTEN { color: #d29922; text-shadow: 0 0 20px #d2992255; }
+.rating-SCHROTT    { color: #da3633; text-shadow: 0 0 20px #da363355; }
+
+/* ── Score Display ── */
+.score-hero { font-family: 'Courier New', monospace; font-size: 3em; font-weight: 900; text-align: center; line-height: 1; }
+
+/* ── Mini Metric Grid (2-col inside panel) ── */
+.mmtile { background:#161b22; border:1px solid #21262d; border-radius:5px; padding:6px 8px; margin:3px 0; }
+.mmlabel { font-size:0.6em; color:#8b949e; text-transform:uppercase; letter-spacing:0.8px; }
+.mmvalue { font-size:0.9em; font-weight:700; color:#e6edf3; }
+
+/* ── K-Badge (K criteria result) ── */
+.k-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85em;
+    font-weight: 700;
+    margin: 3px 2px;
+}
+
+/* ── 52W Range Bar ── */
+.range-bar-wrap { padding: 6px 0 2px 0; }
+.range-bar-bg { background: #21262d; border-radius: 3px; height: 6px; position: relative; overflow: visible; }
+.range-bar-fill { height: 6px; border-radius: 3px; position: absolute; top: 0; }
+.range-dot { width: 12px; height: 12px; border-radius: 50%; position: absolute; top: -3px; transform: translateX(-50%); }
+
+/* ── Separator line ── */
+.dash-sep { border: none; border-top: 1px solid #21262d; margin: 8px 0; }
+
+/* ── Section Header ── */
+.section-hdr {
+    font-size: 0.7em;
+    font-weight: 700;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    padding: 4px 0 6px 0;
+    border-bottom: 1px solid #21262d;
+    margin-bottom: 8px;
+}
+
 /* ── Welcome Screen ── */
 .welcome { background:#161b22; border:1px dashed #30363d; border-radius:8px; padding:28px; text-align:center; color:#8b949e; }
 
@@ -2151,74 +2218,338 @@ def _render_eps_beats(eps_hist: pd.DataFrame):
         pass
     st.markdown("")
 
+# ── COCKPIT: Drama-Chart (Plotly) ─────────────────────────────────────────────
+def _make_price_chart(symbol: str, hist: pd.DataFrame, m: dict) -> "go.Figure":
+    """Dramatischer Kurs-Chart im Bloomberg-Terminal-Stil."""
+    if hist is None or hist.empty or "Close" not in hist.columns:
+        return None
+    try:
+        df = hist[["Close"]].dropna().copy()
+        if hasattr(df.index, "tz") and df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        if len(df) < 5:
+            return None
+
+        prices   = df["Close"].tolist()
+        dates    = df.index.tolist()
+        first_p  = prices[0]
+        last_p   = prices[-1]
+        is_up    = last_p >= first_p
+
+        # Farben: grün wenn Kurs gestiegen, rot wenn gefallen
+        line_col  = "#3fb950" if is_up else "#da3633"
+        fill_col  = "rgba(63,185,80,0.12)" if is_up else "rgba(218,54,51,0.12)"
+        glow_col  = "#3fb950" if is_up else "#da3633"
+
+        # Glättung: 20-Tage MA
+        import numpy as np
+        ma_vals = []
+        window = 20
+        for i in range(len(prices)):
+            if i < window - 1:
+                ma_vals.append(None)
+            else:
+                ma_vals.append(float(np.mean(prices[i - window + 1: i + 1])))
+
+        fig = go.Figure()
+
+        # Fläche (filled area)
+        fig.add_trace(go.Scatter(
+            x=dates, y=prices,
+            fill="tozeroy",
+            fillcolor=fill_col,
+            line=dict(color=line_col, width=2),
+            name=symbol,
+            hovertemplate="<b>%{x|%d.%m.%Y}</b><br>Kurs: %{y:.2f}<extra></extra>",
+        ))
+
+        # MA-Linie
+        fig.add_trace(go.Scatter(
+            x=dates, y=ma_vals,
+            line=dict(color="#f0c040", width=1.2, dash="dot"),
+            name="MA20",
+            hoverinfo="skip",
+        ))
+
+        # Aktueller Preis — horizontale Linie
+        fig.add_hline(
+            y=last_p, line_dash="dot",
+            line_color=glow_col, line_width=1, opacity=0.5
+        )
+
+        fig.update_layout(
+            paper_bgcolor="#0d1117",
+            plot_bgcolor="#0d1117",
+            font=dict(color="#8b949e", size=10),
+            margin=dict(l=8, r=8, t=8, b=24),
+            height=220,
+            showlegend=False,
+            hovermode="x unified",
+            xaxis=dict(
+                showgrid=False,
+                showline=False,
+                tickfont=dict(color="#8b949e", size=9),
+                tickformat="%b %y",
+            ),
+            yaxis=dict(
+                showgrid=True,
+                gridcolor="#161b22",
+                gridwidth=1,
+                showline=False,
+                tickfont=dict(color="#8b949e", size=9),
+                side="right",
+            ),
+        )
+        return fig
+    except Exception:
+        return None
+
+
+def _render_cockpit(symbol: str, m: dict, j: dict, hist: pd.DataFrame):
+    """
+    Bloomberg-Terminal Cockpit: 3-Spalten-Layout
+    Links: Rating · Score · K-Ergebnisse · Flags
+    Mitte: Preis-Hero · Chart · 52W-Range
+    Rechts: 12 Metriken in 2x6 Grid
+    """
+    sym  = "€" if m.get("currency") == "EUR" else "$"
+    price   = m.get("price")
+    name    = m.get("name", symbol)
+    rating  = j.get("rating", "SCHROTT")
+    rs      = j.get("reaper_score", 0)
+    k_met   = j.get("k_met", 0)
+    k_basis = j.get("k_basis", 5)
+    e_met   = j.get("e_met", 0)
+    e_tot   = len(j.get("E", {}))
+    mode    = m.get("_k_basis_mode", "5S")
+    conf_icon, conf_lbl, conf_col = j.get("konfidenz", ("🔴", "NIEDRIG", "#da3633"))
+    abbruch = j.get("abbruch", {})
+
+    # Rating Panel-Farbe
+    _rc = {"KAUFEN": "green", "BEOBACHTEN": "yellow", "SCHROTT": "red"}.get(rating, "red")
+    _rc_hex = {"green": "#3fb950", "yellow": "#d29922", "red": "#da3633"}[_rc]
+
+    # ── Company Name Bar ──────────────────────────────────────────────────────
+    sector   = m.get("sector") or ""
+    industry = m.get("industry") or ""
+    mktcap   = m.get("mktcap")
+    country  = m.get("country") or ""
+    _cap_str = f" · {cap_fmt(mktcap)}" if mktcap else ""
+    _loc_str = f" · {country}" if country else ""
+    st.markdown(
+        f'<div style="display:flex;align-items:baseline;gap:12px;padding:4px 0 6px 0;">'
+        f'<span style="color:#e6edf3;font-size:1.4em;font-weight:900;">{name}</span>'
+        f'<span style="color:#8b949e;font-family:monospace;font-size:0.9em;">{symbol}</span>'
+        f'<span style="color:#8b949e;font-size:0.75em;">{sector}{" · " + industry if industry else ""}{_cap_str}{_loc_str}</span>'
+        f'</div>',
+        unsafe_allow_html=True)
+
+    # ── 3-Spalten-Cockpit ─────────────────────────────────────────────────────
+    _cl, _cm, _cr = st.columns([1, 2.2, 1.3], gap="small")
+
+    # ── LINKE SPALTE: Rating · Score · K-Ergebnisse ───────────────────────────
+    with _cl:
+        st.markdown(
+            f'<div class="cockpit-panel cockpit-panel-{_rc}">'
+            f'<div class="section-hdr">JACK Verdict</div>'
+
+            # Rating
+            f'<div class="rating-hero rating-{rating}">{rating}</div>'
+            f'<div style="text-align:center;color:#8b949e;font-size:0.72em;margin-bottom:8px;">'
+            f'{j.get("sizing","")}</div>'
+
+            # Reaper Score
+            f'<div style="text-align:center;padding:6px 0;">'
+            f'<span style="color:#8b949e;font-size:0.65em;text-transform:uppercase;letter-spacing:1px;">Reaper Score</span><br>'
+            f'<span class="score-hero" style="color:{_rc_hex};">{rs}</span>'
+            f'<span style="color:#8b949e;font-size:0.9em;">/10</span>'
+            f'</div>'
+
+            # K · E Badges
+            f'<div style="text-align:center;margin:6px 0;">'
+            f'<span class="k-badge" style="color:{_rc_hex};border-color:{_rc_hex}40;">K: {k_met}/{k_basis}</span>'
+            f'<span class="k-badge" style="color:#d29922;border-color:#d2992240;">E: {e_met}/{e_tot}</span>'
+            f'</div>'
+
+            # Mode
+            f'<div style="text-align:center;background:#21262d;border-radius:4px;padding:3px 8px;margin:4px 0;">'
+            f'<span style="color:#8b949e;font-size:0.65em;">MODUS: </span>'
+            f'<span style="color:#79c0ff;font-size:0.7em;font-weight:700;">{mode}</span>'
+            f'</div>'
+
+            # Konfidenz
+            f'<div style="text-align:center;margin:6px 0;">'
+            f'<span style="font-size:0.7em;color:#8b949e;">Konfidenz: </span>'
+            f'<span style="color:{conf_col};font-weight:700;font-size:0.78em;">{conf_icon} {conf_lbl}</span>'
+            f'</div>'
+
+            f'</div>',
+            unsafe_allow_html=True)
+
+        # Abstauber
+        if ab := j.get("abstauber"):
+            st.markdown(
+                f'<div style="background:#161b22;border:1px solid #3fb95033;border-radius:5px;'
+                f'padding:6px 10px;margin-top:5px;text-align:center;">'
+                f'<span style="color:#8b949e;font-size:0.62em;">🎯 ABSTAUBER-PREIS</span><br>'
+                f'<span style="color:#3fb950;font-weight:800;font-size:1.1em;font-family:monospace;">{ab}</span>'
+                f'</div>',
+                unsafe_allow_html=True)
+
+        # Abbruch-Warnung
+        if abbruch.get("abort"):
+            st.error(f"⛔ {abbruch['reason']}", icon=None)
+        elif abbruch.get("grenzfall"):
+            st.warning(f"⚠️ GRENZFALL K={k_met}/{k_basis}", icon=None)
+
+    # ── MITTLERE SPALTE: Preis · Chart · 52W-Range ────────────────────────────
+    with _cm:
+        # Preis-Hero
+        prev_close = m.get("prev_close") or price
+        if price and prev_close and prev_close > 0:
+            chg     = price - prev_close
+            chg_pct = chg / prev_close
+            chg_class = "price-change-pos" if chg >= 0 else "price-change-neg"
+            chg_arrow = "▲" if chg >= 0 else "▼"
+        else:
+            chg = chg_pct = None
+            chg_class = "price-change-pos"
+            chg_arrow = ""
+
+        _price_html = (
+            f'<div style="display:flex;align-items:baseline;gap:14px;padding:2px 0 8px 0;">'
+            f'<span class="price-hero" style="color:#e6edf3;">'
+            f'{sym}{price:.2f}</span>'
+        )
+        if chg is not None:
+            _price_html += (
+                f'<span class="{chg_class}">'
+                f'{chg_arrow} {sym}{abs(chg):.2f} ({chg_pct:+.2%})</span>'
+            )
+        _price_html += (
+            f'<span style="color:#8b949e;font-size:0.72em;">{m.get("currency","USD")}'
+            f' · {m.get("exchange","")}</span>'
+            f'</div>'
+        )
+        st.markdown(_price_html, unsafe_allow_html=True)
+
+        # 52W Range Bar
+        hi52 = m.get("hi52"); lo52 = m.get("lo52")
+        if price and hi52 and lo52 and hi52 > lo52:
+            _pos_pct = (price - lo52) / (hi52 - lo52) * 100
+            _pos_pct = max(2, min(98, _pos_pct))
+            _dot_col = "#3fb950" if _pos_pct >= 50 else "#d29922"
+            st.markdown(
+                f'<div style="padding:0 4px 8px 4px;">'
+                f'<div style="display:flex;justify-content:space-between;'
+                f'font-size:0.65em;color:#8b949e;margin-bottom:4px;">'
+                f'<span>52W Tief {sym}{lo52:.1f}</span>'
+                f'<span style="color:{_dot_col};font-weight:700;">'
+                f'{_pos_pct:.0f}% vom Tief</span>'
+                f'<span>52W Hoch {sym}{hi52:.1f}</span>'
+                f'</div>'
+                f'<div class="range-bar-bg">'
+                f'<div class="range-dot" style="left:{_pos_pct}%;background:{_dot_col};'
+                f'box-shadow:0 0 6px {_dot_col};"></div>'
+                f'<div style="height:6px;border-radius:3px;background:linear-gradient('
+                f'to right,#da3633,#d29922,#3fb950);opacity:0.4;"></div>'
+                f'</div>'
+                f'</div>',
+                unsafe_allow_html=True)
+
+        # Preis-Chart (dramatisch)
+        fig = _make_price_chart(symbol, hist, m)
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.caption("Kursdaten nicht verfügbar")
+
+        # Analyst-Konsens
+        rec = (m.get("recommendation") or "").upper()
+        tgt = m.get("target_price")
+        if rec or tgt:
+            _upside_str = ""
+            if tgt and price and price > 0:
+                _upside = (tgt / price - 1)
+                _uc = "#3fb950" if _upside > 0 else "#da3633"
+                _upside_str = (f' · <span style="color:{_uc};font-weight:700;">'
+                               f'Upside: {_upside:+.1%}</span>')
+            _rec_colors = {"BUY": "#3fb950", "STRONG_BUY": "#3fb950",
+                           "HOLD": "#d29922", "SELL": "#da3633", "UNDERPERFORM": "#da3633"}
+            _rc2 = _rec_colors.get(rec, "#8b949e")
+            st.markdown(
+                f'<div style="font-size:0.72em;color:#8b949e;padding:2px 0;">'
+                f'Analyst-Konsens: <b style="color:{_rc2};">{rec or "N/V"}</b>'
+                f' · Ziel: <b style="color:#e6edf3;">{sym}{tgt:.2f}</b>'
+                f'{_upside_str}</div>' if tgt else
+                f'<div style="font-size:0.72em;color:#8b949e;">Konsens: {rec}</div>',
+                unsafe_allow_html=True)
+
+    # ── RECHTE SPALTE: Metriken-Grid ──────────────────────────────────────────
+    with _cr:
+        st.markdown(
+            '<div class="cockpit-panel">'
+            '<div class="section-hdr">Fundamentaldaten</div>'
+            '</div>',
+            unsafe_allow_html=True)
+
+        # Metriken in 2-Spalten-Grid
+        def _mm(label, val, col="#e6edf3"):
+            return (
+                f'<div class="mmtile">'
+                f'<div class="mmlabel">{label}</div>'
+                f'<div class="mmvalue" style="color:{col};">{val}</div>'
+                f'</div>'
+            )
+
+        nd = m.get("nd_ebitda")
+        pe = m.get("pe"); fwd_pe = m.get("fwd_pe")
+        roic = m.get("roic"); fcf_m = m.get("real_fcf_margin") or m.get("fcf_margin")
+        gm   = m.get("gross_margin"); op_m = m.get("op_margin")
+        rev_cagr = m.get("rev_cagr"); eps_cagr = m.get("eps_cagr")
+        pb = m.get("price_to_book"); ps = m.get("price_to_sales")
+        sbc_i = m.get("sbc_intensity")
+        ev_fcf = m.get("ev_fcf")
+        roe    = m.get("roe")
+
+        _metrics = [
+            ("ROIC",          pct(roic),      "#3fb950" if (roic or 0) > 0.20 else ("#d29922" if (roic or 0) > 0.10 else "#da3633")),
+            ("FCF-Marge",     pct(fcf_m),     "#3fb950" if (fcf_m or 0) >= 0.20 else ("#d29922" if (fcf_m or 0) >= 0.10 else "#da3633")),
+            ("Bruttomarge",   pct(gm),        "#3fb950" if (gm or 0) >= 0.60 else "#d29922"),
+            ("Op. Marge",     pct(op_m),      "#3fb950" if (op_m or 0) >= 0.20 else "#d29922"),
+            ("Rev-CAGR",      pct(rev_cagr),  "#3fb950" if (rev_cagr or 0) >= 0.08 else "#d29922"),
+            ("EPS-CAGR",      pct(eps_cagr),  "#3fb950" if (eps_cagr or 0) >= 0.12 else "#d29922"),
+            ("ROE",           pct(roe),       "#3fb950" if (roe or 0) >= 0.15 else "#d29922"),
+            ("ND/EBITDA",     xfmt(nd),       "#3fb950" if nd is None else ("#3fb950" if nd < 2 else ("#d29922" if nd < 4 else "#da3633"))),
+            ("PE (trail.)",   nfmt(pe) if pe else "N/V",   "#e6edf3"),
+            ("PE (fwd.)",     nfmt(fwd_pe) if fwd_pe else "N/V", "#e6edf3"),
+            ("EV/FCF",        xfmt(ev_fcf),   "#3fb950" if 0 < (ev_fcf or 999) < 25 else "#e6edf3"),
+            ("SBC/Umsatz",    pct(sbc_i),     "#3fb950" if (sbc_i or 0) < 0.05 else ("#d29922" if (sbc_i or 0) < 0.10 else "#da3633")),
+        ]
+
+        # 2-Spalten HTML-Grid
+        _left_html = ""
+        _right_html = ""
+        for i, (_lbl, _val, _vc) in enumerate(_metrics):
+            _cell = _mm(_lbl, _val, _vc)
+            if i % 2 == 0:
+                _left_html += _cell
+            else:
+                _right_html += _cell
+
+        _mc1, _mc2 = st.columns(2)
+        _mc1.markdown(_left_html, unsafe_allow_html=True)
+        _mc2.markdown(_right_html, unsafe_allow_html=True)
+
+
 # ── Main Render ────────────────────────────────────────────────────────────────
 def render(symbol: str, m: dict, j: dict, hist: pd.DataFrame, eps_hist: pd.DataFrame = None):
     sym_sign = "€" if m.get("currency") == "EUR" else "$"
     price    = m.get("price")
     name     = m.get("name", symbol)
 
-    # Company header
-    price_str = f" · {sym_sign}{price:.2f} {m.get('currency','USD')}" if price else ""
-    st.markdown(f"### {name} `{symbol}`{price_str}")
-    parts = [x for x in [m.get("sector"), m.get("industry")] if x]
-    if parts:
-        st.caption(" · ".join(parts))
-
-    hi52 = m.get("hi52"); lo52 = m.get("lo52")
-    if price and hi52 and lo52:
-        from_high = (price - hi52) / hi52
-        from_low  = (price - lo52) / lo52
-        st.caption(f"52W Hoch: {sym_sign}{hi52:.2f} ({from_high:+.1%})  ·  52W Tief: {sym_sign}{lo52:.2f} ({from_low:+.1%})")
-
-    # ── Unternehmensbeschreibung (ganz oben) ───────────────────────────────────
-    desc = m.get("description")
-    if desc:
-        with st.expander("📖 Unternehmensbeschreibung", expanded=False):
-            st.markdown(desc)
-        if m.get("website"):
-            st.caption(f"🌐 {m['website']}")
-
-    st.markdown("---")
-
-    # ── Row 1: Rating / Score / Top metrics ──────────────────────────────────
-    c_r, c_s, c1, c2, c3, c4 = st.columns([1.3, 1.6, 1, 1, 1, 1])
-
-    with c_r:
-        rating = j["rating"]
-        st.markdown(f'<span class="badge badge-{rating}">{rating}</span>', unsafe_allow_html=True)
-        st.caption(j.get("sizing", ""))
-        em, lbl, col = j["konfidenz"]
-        st.markdown(f'<span style="color:{col};font-weight:700;">{em} {lbl}</span>', unsafe_allow_html=True)
-        if ab := j.get("abstauber"):
-            st.caption(f"🎯 Abstauber: **{ab}**")
-
-    with c_s:
-        score_bar(j["reaper_score"])
-        st.caption(f"K-Kriterien: {j['k_met']}/{j['k_basis']}  ·  E-Kriterien: {j['e_met']}/{len(j['E'])}")
-        st.caption(f"WACC: {j['wacc_flag']}  ·  Debt: {j['debt_flag']}")
-
-    roic = m.get("roic"); fcf_m = m.get("fcf_margin")
-    op_m = m.get("op_margin"); gm = m.get("gross_margin")
-    with c1: tile("ROIC",       pct(roic), kcolor((roic or 0) > 0.20))
-    with c2: tile("FCF-Marge",  pct(fcf_m), kcolor((fcf_m or 0) >= 0.20))
-    with c3: tile("Op. Marge",  pct(op_m),  "#3fb950" if (op_m or 0) >= 0.20 else "#d29922")
-    with c4: tile("Bruttomt.",  pct(gm),    "#3fb950" if (gm   or 0) >= 0.60 else "#d29922")
-
-    # ── Row 2: Snapshot-Metriken (Screenshot 5-Stil) ─────────────────────────
-    p        = m.get("piotroski", {})
-    net_cash = m.get("net_cash")
-    ebitda0  = m.get("ebitda_series", [None])[0]
-    nc_color = "#3fb950" if (net_cash or 0) > 0 else "#da3633"
-    nc_label = cap_fmt(abs(net_cash)) if net_cash is not None else "N/V"
-    nc_str   = f"+{nc_label}" if (net_cash or 0) > 0 else f"-{nc_label}"
-
-    c5, c6, c7, c8, c9, c10 = st.columns(6)
-    with c5:  tile("Netto Cash",  nc_str,                   nc_color)
-    with c6:  tile("EBITDA",      cap_fmt(ebitda0),          "#e6edf3")
-    with c7:  tile("Piotroski",   f"{p.get('score','N/V')}/{p.get('max',8)}", kcolor((p.get("score") or 0) >= 7))
-    with c8:  tile("Rev-CAGR",    pct(m.get("rev_cagr")),   "#3fb950" if (m.get("rev_cagr") or 0) >= 0.08 else "#d29922")
-    with c9:  tile("EV/FCF",      xfmt(m.get("ev_fcf")),    "#3fb950" if 0 < (m.get("ev_fcf") or 999) < 25 else "#d29922")
-    with c10: tile("Beta",        nfmt(m.get("beta"))        if m.get("beta") else "N/V", "#e6edf3")
+    # ── COCKPIT (Bloomberg-Terminal-Stil) ────────────────────────────────────
+    _render_cockpit(symbol, m, j, hist)
 
     st.markdown("---")
 
