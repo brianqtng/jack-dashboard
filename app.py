@@ -1023,7 +1023,7 @@ TAG_COLOR = {
     # ── Legacy-Aliases (Rückwärtskompatibilität) ───────────────────────────────
     "VERIFIED":  "#3fb950",   # = S1
     "ESTIMATE":  "#d29922",   # = S4
-    "TRAINING":  "#8b949e",   # Modell-Trainingsdaten
+    "TRAINING":  "#e3b341",   # Single-Source (yfinance) — halbe Punkte, Konfidenz max MITTEL
     "SKIP":      "#8b949e",   # übersprungen (z.B. Beneish ohne SEC-Live)
 }
 
@@ -1264,8 +1264,8 @@ def _calc_daten_konfidenz(m: dict) -> dict:
     def _item(name: str, field, source_if_avail: str) -> dict:
         avail = field is not None
         tag   = source_if_avail if avail else "N/V"
-        conf  = "HOCH"   if avail and tag in ("LIVE", "S1", "S2") else \
-                "MITTEL"  if avail and tag in ("S3", "S4") else \
+        conf  = "HOCH"   if avail and tag in ("LIVE", "S1", "S2", "VERIFIED") else \
+                "MITTEL"  if avail and tag in ("S3", "S4", "TRAINING", "ESTIMATE") else \
                 "NIEDRIG"
         return {"Datenpunkt": name, "✓": "✅" if avail else "❌",
                 "Quelle": tag, "Konfidenz": conf}
@@ -1273,20 +1273,21 @@ def _calc_daten_konfidenz(m: dict) -> dict:
     piotr = m.get("piotroski", {})
     _rev3 = (m.get("revenues") or [])
     items = [
-        # S1 — SEC-Filings (via yfinance annual statements)
+        # LIVE — Echtzeitdaten
         _item("Kursdaten / Preis",       m.get("price"),            "LIVE"),
         _item("Marktkapitalisierung",    m.get("mktcap"),           "LIVE"),
-        _item("Umsatz (3+ Jahre)",       _rev3[0] if len(_rev3) >= 3 else None, "S1"),
-        _item("Brutto-/Op. Marge",       m.get("gross_margin"),     "S1"),
-        _item("FCF-Marge (real/SBC)",    m.get("real_fcf_margin"),  "S1"),
-        _item("ROIC",                    m.get("roic"),             "S1"),
-        _item("Verschuldung (ND/EBITDA)",m.get("nd_ebitda"),        "S1"),
-        _item("Piotroski F-Score",       piotr.get("score") if piotr.get("details") else None, "S1"),
-        _item("SBC-Quote",               m.get("sbc_intensity"),    "S1"),
-        # S4 — Estimates / berechnete Metriken
-        _item("EPS-CAGR",                m.get("eps_cagr"),         "S4"),
-        _item("Rev-CAGR",                m.get("rev_cagr"),         "S4"),
-        _item("Analysten-Konsens",       m.get("target_price"),     "S4"),
+        # TRAINING — yfinance Single-Source (Stufe 3) · Für JACK-Konformität: Stufe 1+2 verifizieren
+        _item("Umsatz (3+ Jahre)",       _rev3[0] if len(_rev3) >= 3 else None, "TRAINING"),
+        _item("Brutto-/Op. Marge",       m.get("gross_margin"),     "TRAINING"),
+        _item("FCF-Marge (real/SBC)",    m.get("real_fcf_margin"),  "TRAINING"),
+        _item("ROIC",                    m.get("roic"),             "TRAINING"),
+        _item("Verschuldung (ND/EBITDA)",m.get("nd_ebitda"),        "TRAINING"),
+        _item("Piotroski F-Score",       piotr.get("score") if piotr.get("details") else None, "TRAINING"),
+        _item("SBC-Quote",               m.get("sbc_intensity"),    "TRAINING"),
+        # ESTIMATE — Berechnete/abgeleitete Metriken (nur E-Kriterien & WACC)
+        _item("EPS-CAGR",                m.get("eps_cagr"),         "ESTIMATE"),
+        _item("Rev-CAGR",                m.get("rev_cagr"),         "ESTIMATE"),
+        _item("Analysten-Konsens",       m.get("target_price"),     "ESTIMATE"),
     ]
 
     available  = sum(1 for it in items if it["✓"] == "✅")
@@ -1311,12 +1312,15 @@ def _calc_daten_konfidenz(m: dict) -> dict:
 
 
 # ── KONFIDENZ-DECKEL ──────────────────────────────────────────────────────────
-def _calc_konfidenz_deckel(k_avail: int, k_basis: int, flags: list[dict]) -> tuple:
-    """Returns (icon, label, hex_color). Lowest ceiling wins."""
+def _calc_konfidenz_deckel(k_avail: int, k_basis: int, flags: list,
+                           k_training_count: int = 0) -> tuple:
+    """Returns (icon, label, hex_color). Lowest ceiling wins.
+    DATA-INTEGRITY-SYSTEM: ≥ 2 K-Kriterien [TRAINING] → max 🟡 MITTEL."""
     red_flags = [f for f in flags if f["color"] == "#da3633"]
     if red_flags or k_avail < k_basis - 2:
         return "🔴", "NIEDRIG", "#da3633"
-    elif k_avail < k_basis - 1 or len(flags) > 0:
+    elif k_avail < k_basis - 1 or len(flags) > 0 or k_training_count >= 2:
+        # ≥ 2 TRAINING K-Kriterien → Single-Source → Konfidenz-Deckel 🟡 MITTEL
         return "🟡", "MITTEL", "#d29922"
     else:
         return "🟢", "HOCH", "#238636"
@@ -1324,13 +1328,14 @@ def _calc_konfidenz_deckel(k_avail: int, k_basis: int, flags: list[dict]) -> tup
 
 # ── REAPER SCORE MIT ANKER-SYSTEM ─────────────────────────────────────────────
 def _calc_reaper_score(k_met: int, k_basis: int, e_met: int, e_total: int,
-                       m: dict, flags: list[dict]) -> int:
+                       m: dict, flags: list, k_training_count: int = 0) -> int:
     """Anchor first, then score within the anchor range.
-    Anchors: 9–10 (Elite), 6–8 (Solid), 3–5 (Schwach), 1–2 (Schrott)"""
-    red_flags   = [f for f in flags if f["color"] == "#da3633"]
+    Anchors: 9–10 (Elite), 6–8 (Solid), 3–5 (Schwach), 1–2 (Schrott)
+    DATA-INTEGRITY: TRAINING-Penalty senkt Score innerhalb des Anchor-Bereichs."""
+    red_flags    = [f for f in flags if f["color"] == "#da3633"]
     yellow_flags = [f for f in flags if f["color"] == "#d29922"]
 
-    # --- Anchor determination ---
+    # --- Anchor determination (binär: k_met vs k_basis) ---
     if k_met >= k_basis and not red_flags:
         anchor_lo, anchor_hi = 9, 10        # Elite
     elif k_met >= k_basis - 1 and not red_flags:
@@ -1351,12 +1356,22 @@ def _calc_reaper_score(k_met: int, k_basis: int, e_met: int, e_total: int,
 
     raw = anchor_lo + (e_ratio * (anchor_hi - anchor_lo)) + val_pts * 0.5
     raw -= len(yellow_flags) * 0.3
+
+    # DATA-INTEGRITY: TRAINING-Penalty — Single-Source senkt Score
+    # Jedes TRAINING K-Kriterium = -0.25 (max. -1.0 Punkt Abzug)
+    training_penalty = min(1.0, k_training_count * 0.25)
+    raw -= training_penalty
+
     score = max(anchor_lo, min(anchor_hi, round(raw)))
 
     # ── JACK-Regel: Maximum bei 🔴 Konfidenz = 6/10 ─────────────────────────
-    # 🔴 Konfidenz tritt auf bei: roten Flags ODER K-Kriterien stark lückenhaft
     if red_flags:
         score = min(score, 6)
+
+    # DATA-INTEGRITY: ELITE (9-10) nur wenn alle K [VERIFIED] oder [LIVE]
+    # Bei ≥ 2 TRAINING K → max Anchor = Solid (8)
+    if k_training_count >= 2 and score > 8:
+        score = 8
 
     return score
 
@@ -1441,6 +1456,8 @@ def _render_jack_summary(j: dict, m: dict):
     mode    = m.get("_k_basis_mode", "5S Standard")
     k_met   = j.get("k_met", 0)
     k_basis = j.get("k_basis", 5)
+    k_met_adj        = j.get("k_met_adj", float(k_met))
+    k_training_count = j.get("k_training_count", 0)
     flags   = j.get("flags", [])
     ab      = j.get("abstauber", "—")
     ec      = j.get("edge_catalyst", {})
@@ -1499,10 +1516,21 @@ def _render_jack_summary(j: dict, m: dict):
     <div><span style="color:#8b949e;">EDGE SCORE:</span> &nbsp; <b>{ec.get("edge","—")}</b></div>
     <div><span style="color:#8b949e;">CATALYST SCORE:</span> &nbsp; <b>{ec.get("catalyst","—")}</b></div>
     <div><span style="color:#8b949e;">TIEFE:</span> &nbsp; <b>{tiefe}</b></div>
-    <div><span style="color:#8b949e;">K-BASIS:</span> &nbsp; <b>{mode} · {k_met}/{k_basis}</b></div>
+    <div><span style="color:#8b949e;">K-BASIS:</span> &nbsp;
+      <b>{mode} · {k_met}/{k_basis}</b>
+      <span style="color:#e3b341;font-size:0.8em;"> (adj: {k_met_adj:.1f}/{k_basis})</span>
+    </div>
     <div style="grid-column:1/-1;">
       <span style="color:#8b949e;">FLAGS AKTIV:</span> &nbsp;
       <span style="color:{"#da3633" if flags else "#3fb950"};">{flags_str}</span>
+    </div>
+    <div style="grid-column:1/-1;margin-top:4px;border-top:1px solid #21262d;padding-top:6px;">
+      <span style="color:#8b949e;font-size:0.8em;">DATA-INTEGRITY: </span>
+      <span style="color:#e3b341;font-size:0.8em;font-weight:700;">[TRAINING] × {k_training_count} K-Kriterien</span>
+      <span style="color:#8b949e;font-size:0.8em;"> · Single-Source (yfinance Stufe 3) · Konfidenz-Deckel: </span>
+      <span style="color:{"#e3b341" if k_training_count >= 2 else "#3fb950"};font-size:0.8em;font-weight:700;">
+        {"🟡 MITTEL (≥2 TRAINING)" if k_training_count >= 2 else "🟢 Nicht aktiv"}
+      </span>
     </div>
   </div>
   <div style="height:6px;background:#21262d;border-radius:3px;margin:14px 0;">
@@ -1544,7 +1572,10 @@ def calc_jack(m: dict) -> dict:
     # --- K-Kriterien (Gatekeeper) — mode-spezifisch ---
     K = {}
     def k(name, passed, val, avail=True):
-        K[name] = {"pass": passed, "val": val, "avail": avail}
+        # DATA-INTEGRITY: [ESTIMATE] für K-Kriterien VERBOTEN → immer TRAINING oder LIVE
+        _raw_tag = _DNA_TAG_SOURCES.get(name, ("TRAINING", "yfinance"))[0]
+        _k_tag   = "TRAINING" if _raw_tag in ("S4", "ESTIMATE", "S1", "S2", "S3") else _raw_tag
+        K[name] = {"pass": passed, "val": val, "avail": avail, "tag": _k_tag}
 
     p  = m.get("piotroski", {})
     ps = p.get("score")
@@ -1713,7 +1744,22 @@ def calc_jack(m: dict) -> dict:
     k_met   = sum(1 for v in K.values() if v["pass"])
     k_avail = sum(1 for v in K.values() if v["avail"])
     e_met   = sum(1 for v in E.values() if v["pass"])
-    j.update({"k_met": k_met, "k_avail": k_avail, "e_met": e_met, "k_basis": k_basis})
+
+    # --- DATA-INTEGRITY: TRAINING-Zählung + Halbe-Punkte ---
+    # [TRAINING] K-Kriterien zählen als halbe Punkte (DATA-INTEGRITY-SYSTEM)
+    k_training_count = sum(
+        1 for v in K.values()
+        if v.get("avail", True) and v.get("tag", "TRAINING") == "TRAINING"
+    )
+    # Effektiver K-Score: TRAINING-Passes = 0.5, LIVE-Passes = 1.0
+    k_met_adj = sum(
+        (0.5 if v.get("tag", "TRAINING") == "TRAINING" else 1.0)
+        for v in K.values() if v["pass"]
+    )
+
+    j.update({"k_met": k_met, "k_met_adj": k_met_adj,
+               "k_avail": k_avail, "e_met": e_met, "k_basis": k_basis,
+               "k_training_count": k_training_count})
 
     # --- DATEN-KONFIDENZ (Schritt 2B) ---
     j["daten_konfidenz"] = _calc_daten_konfidenz(m)
@@ -1722,11 +1768,11 @@ def calc_jack(m: dict) -> dict:
     flags = _detect_flags(m)
     j["flags"] = flags
 
-    # --- KONFIDENZ-DECKEL ---
-    j["konfidenz"] = _calc_konfidenz_deckel(k_avail, k_basis, flags)
+    # --- KONFIDENZ-DECKEL (inkl. TRAINING-Regel) ---
+    j["konfidenz"] = _calc_konfidenz_deckel(k_avail, k_basis, flags, k_training_count)
 
     # --- REAPER SCORE mit Anker ---
-    rs = _calc_reaper_score(k_met, k_basis, e_met, len(E), m, flags)
+    rs = _calc_reaper_score(k_met, k_basis, e_met, len(E), m, flags, k_training_count)
     j["reaper_score"] = rs
 
     # --- Rating (Drei-Klassen) ---
@@ -1958,63 +2004,65 @@ def _render_valuation_multiples(m: dict):
 # 🧬 DNA-CHECK — Vollständige Implementierung per JACK-Spezifikation
 # ══════════════════════════════════════════════════════════════════════════════
 _DNA_TAG_SOURCES = {
-    # ── K-Kriterien — Stufe 1 (SEC/Annual Statements via yfinance) ──────────
-    "ROIC > 20%":        ("S1",  "Annual IS/BS"),
-    "FCF-Marge ≥ 20%":   ("S1",  "Annual CF · nach SBC"),
-    "FCF-Marge ≥ 15%":   ("S1",  "Annual CF · nach SBC"),
-    "FCF-Marge ≥ 5%":    ("S1",  "Annual CF · nach SBC"),
-    "FCF > 0":           ("S1",  "Annual CF · nach SBC"),
-    "Op. Leverage":      ("S4",  "Derived from IS"),
-    "Piotroski ≥ 7":     ("S1",  "Annual IS/BS/CF"),
-    "Piotroski ≥ 5":     ("S1",  "Annual IS/BS/CF"),
-    "EPS-CAGR ≥ 12%":    ("S4",  "Multi-year calc"),
-    "EPS-CAGR ≥ 10%":    ("S4",  "Multi-year calc"),
-    "EPS-CAGR ≥ 15%":    ("S4",  "Multi-year calc"),
-    "SBC < 10%":         ("S1",  "Annual CF"),
-    "SBC < 15%":         ("S1",  "Annual CF"),
-    "ROE > 12%":         ("S1",  "Annual IS/BS"),
-    "ROE ≥ 10%":         ("S1",  "Annual IS/BS"),
-    "ROIC > 15%":        ("S1",  "Annual IS/BS"),
-    "ROIC ≥ 10%":        ("S1",  "Annual IS/BS"),
-    "Bruttomarge ≥65%":  ("S1",  "Annual IS"),
-    "Rev-CAGR ≥ 15%":    ("S4",  "Multi-year calc"),
-    "Op. Marge ≥ 40%":   ("S1",  "Annual IS"),
-    "Op. Marge ≥ 30%":   ("S1",  "Annual IS"),
-    "ND/EBITDA < 6x":    ("S1",  "Annual BS"),
-    "ND/EBITDA < 5x":    ("S1",  "Annual BS"),
-    "ND/EBITDA < 4x":    ("S1",  "Annual BS"),
-    "ND/EBITDA < 3x":    ("S1",  "Annual BS"),
-    "Capex ≤ 30%":       ("S1",  "Annual CF"),
-    "Div.-Rendite ≥4%":  ("LIVE","yfinance info"),
-    "Payout ≤ 80%":      ("S4",  "yfinance info"),
-    "EV/EBITDA ≤ 8x":    ("S4",  "Calc: EV/EBITDA"),
-    "ROA > 5%":          ("S1",  "Annual IS/BS"),
-    # ── E-Kriterien ─────────────────────────────────────────────────────────
-    "Bruttomarge ≥ 60%": ("S1",  "Annual IS"),
-    "Bruttomarge ≥ 40%": ("S1",  "Annual IS"),
-    "Bruttomarge ≥ 30%": ("S1",  "Annual IS"),
-    "Bruttomarge ≥ 70%": ("S1",  "Annual IS"),
-    "Op. Marge ≥ 20%":   ("S1",  "Annual IS"),
-    "Op. Marge ≥ 15%":   ("S1",  "Annual IS"),
-    "Op. Marge ≥ 10%":   ("S1",  "Annual IS"),
-    "Rev-CAGR ≥ 8%":     ("S4",  "Multi-year calc"),
-    "Rev-CAGR ≥ 6%":     ("S4",  "Multi-year calc"),
-    "Rev-CAGR ≥ 3%":     ("S4",  "Multi-year calc"),
-    "Rev-CAGR ≥ 20%":    ("S4",  "Multi-year calc"),
-    "Rev-CAGR ≥ 0%":     ("S4",  "Multi-year calc"),
-    "Net Debt/EBITDA<2x":("S1",  "Annual BS"),
-    "ND/EBITDA < 2x":    ("S1",  "Annual BS"),
-    "Capex/Umsatz ≤ 5%": ("S1",  "Annual CF"),
-    "Capex ≤ 35%":       ("S1",  "Annual CF"),
-    "CCC < 30d":         ("S4",  "Derived from BS"),
-    "CCC < 0d":          ("S4",  "Derived from BS"),
-    "ROE ≥ 15%":         ("S1",  "Annual IS/BS"),
-    "ROA > 3%":          ("S1",  "Annual IS/BS"),
-    "P/B < 2x":          ("LIVE","yfinance info"),
-    "P/B < 1.5x":        ("LIVE","yfinance info"),
-    "Div.-Rendite ≥ 2%": ("LIVE","yfinance info"),
-    "EBITDA > 0":        ("S1",  "Annual IS+CF"),
-    "ROIC > 20%":        ("S1",  "Annual IS/BS"),
+    # ── K-Kriterien — yfinance Single-Source → [TRAINING]
+    # DATA-INTEGRITY: K-Kriterien zählen als halbe Punkte bei [TRAINING]
+    # [ESTIMATE] für K-Kriterien VERBOTEN — nur [TRAINING] oder [LIVE]
+    "ROIC > 20%":        ("TRAINING", "yfinance IS/BS · Single-Source"),
+    "FCF-Marge ≥ 20%":   ("TRAINING", "yfinance CF · nach SBC"),
+    "FCF-Marge ≥ 15%":   ("TRAINING", "yfinance CF · nach SBC"),
+    "FCF-Marge ≥ 5%":    ("TRAINING", "yfinance CF · nach SBC"),
+    "FCF > 0":           ("TRAINING", "yfinance CF · nach SBC"),
+    "Op. Leverage":      ("TRAINING", "Abgeleitet yfinance IS"),
+    "Piotroski ≥ 7":     ("TRAINING", "yfinance IS/BS/CF"),
+    "Piotroski ≥ 5":     ("TRAINING", "yfinance IS/BS/CF"),
+    "EPS-CAGR ≥ 12%":    ("TRAINING", "yfinance Multi-year"),
+    "EPS-CAGR ≥ 10%":    ("TRAINING", "yfinance Multi-year"),
+    "EPS-CAGR ≥ 15%":    ("TRAINING", "yfinance Multi-year"),
+    "SBC < 10%":         ("TRAINING", "yfinance CF"),
+    "SBC < 15%":         ("TRAINING", "yfinance CF"),
+    "ROE > 12%":         ("TRAINING", "yfinance IS/BS"),
+    "ROE ≥ 10%":         ("TRAINING", "yfinance IS/BS"),
+    "ROIC > 15%":        ("TRAINING", "yfinance IS/BS"),
+    "ROIC ≥ 10%":        ("TRAINING", "yfinance IS/BS"),
+    "Bruttomarge ≥65%":  ("TRAINING", "yfinance IS"),
+    "Rev-CAGR ≥ 15%":    ("TRAINING", "yfinance Multi-year"),
+    "Op. Marge ≥ 40%":   ("TRAINING", "yfinance IS"),
+    "Op. Marge ≥ 30%":   ("TRAINING", "yfinance IS"),
+    "ND/EBITDA < 6x":    ("TRAINING", "yfinance BS"),
+    "ND/EBITDA < 5x":    ("TRAINING", "yfinance BS"),
+    "ND/EBITDA < 4x":    ("TRAINING", "yfinance BS"),
+    "ND/EBITDA < 3x":    ("TRAINING", "yfinance BS"),
+    "Capex ≤ 30%":       ("TRAINING", "yfinance CF"),
+    "Div.-Rendite ≥4%":  ("LIVE",     "yfinance · Kurs-abhängig"),
+    "Payout ≤ 80%":      ("TRAINING", "yfinance info"),
+    "EV/EBITDA ≤ 8x":    ("TRAINING", "Abgeleitet yfinance"),
+    "ROA > 5%":          ("TRAINING", "yfinance IS/BS"),
+    # ── E-Kriterien — [ESTIMATE] erlaubt · Konfidenz-Deckel ≥3 → 🟡 MITTEL ──
+    "Bruttomarge ≥ 60%": ("ESTIMATE", "yfinance IS"),
+    "Bruttomarge ≥ 40%": ("ESTIMATE", "yfinance IS"),
+    "Bruttomarge ≥ 30%": ("ESTIMATE", "yfinance IS"),
+    "Bruttomarge ≥ 70%": ("ESTIMATE", "yfinance IS"),
+    "Op. Marge ≥ 20%":   ("ESTIMATE", "yfinance IS"),
+    "Op. Marge ≥ 15%":   ("ESTIMATE", "yfinance IS"),
+    "Op. Marge ≥ 10%":   ("ESTIMATE", "yfinance IS"),
+    "Rev-CAGR ≥ 8%":     ("ESTIMATE", "Multi-year calc"),
+    "Rev-CAGR ≥ 6%":     ("ESTIMATE", "Multi-year calc"),
+    "Rev-CAGR ≥ 3%":     ("ESTIMATE", "Multi-year calc"),
+    "Rev-CAGR ≥ 20%":    ("ESTIMATE", "Multi-year calc"),
+    "Rev-CAGR ≥ 0%":     ("ESTIMATE", "Multi-year calc"),
+    "Net Debt/EBITDA<2x":("ESTIMATE", "yfinance BS"),
+    "ND/EBITDA < 2x":    ("ESTIMATE", "yfinance BS"),
+    "Capex/Umsatz ≤ 5%": ("ESTIMATE", "yfinance CF"),
+    "Capex ≤ 35%":       ("ESTIMATE", "yfinance CF"),
+    "CCC < 30d":         ("ESTIMATE", "Abgeleitet BS"),
+    "CCC < 0d":          ("ESTIMATE", "Abgeleitet BS"),
+    "ROE ≥ 15%":         ("ESTIMATE", "yfinance IS/BS"),
+    "ROA > 3%":          ("ESTIMATE", "yfinance IS/BS"),
+    "P/B < 2x":          ("LIVE",     "yfinance · Kurs-abhängig"),
+    "P/B < 1.5x":        ("LIVE",     "yfinance · Kurs-abhängig"),
+    "Div.-Rendite ≥ 2%": ("LIVE",     "yfinance · Kurs-abhängig"),
+    "EBITDA > 0":        ("ESTIMATE", "yfinance IS+CF"),
+    "ROIC > 20%":        ("TRAINING", "yfinance IS/BS · Single-Source"),
 }
 
 # Warn-Zonen per K/E-Kriterium (innerhalb XX% des Schwellenwerts)
@@ -2217,6 +2265,15 @@ def _render_dna_check(j: dict, m: dict):
     conf_col     = "#d29922" if conf_deckel else "#3fb950"
     k_col        = "#3fb950" if k_met >= k_basis else ("#d29922" if k_met >= k_basis - 2 else "#da3633")
 
+    # DATA-INTEGRITY: TRAINING-Zählung für K-Kriterien
+    k_training_count = j.get("k_training_count", 0)
+    k_met_adj        = j.get("k_met_adj", float(k_met))
+    _tr_col = "#e3b341" if k_training_count >= 2 else "#8b949e"
+    _tr_deckel_txt = "🟡 MITTEL (aktiv)" if k_training_count >= 2 else "🟢 Nicht aktiv"
+    _tr_deckel_col = "#e3b341" if k_training_count >= 2 else "#3fb950"
+    _tr_note = (f"⚠️ {k_training_count} K-Kriterien [TRAINING] → Single-Source · "
+                f"Effektiver K-Score: {k_met_adj:.1f}/{k_basis} (Halbe Punkte)")
+
     st.markdown(
         f'<div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;'
         f'padding:8px 14px;margin-top:8px;font-family:monospace;font-size:0.82em;">'
@@ -2231,8 +2288,27 @@ def _render_dna_check(j: dict, m: dict):
         f'<span style="color:{conf_col};">{estimate_count} Datenpunkte [ESTIMATE]</span>'
         f'<span style="color:#8b949e;"> → Konfidenz-Deckel 🟡 aktiv? </span>'
         f'<span style="color:{conf_col};font-weight:700;">{conf_txt}</span>'
+        f'<br>'
+        f'<span style="color:{_tr_col};">{_tr_note}</span>'
+        f'<br>'
+        f'<span style="color:#8b949e;">TRAINING-Deckel aktiv? </span>'
+        f'<span style="color:{_tr_deckel_col};font-weight:700;">{_tr_deckel_txt}</span>'
         f'</div>',
         unsafe_allow_html=True)
+
+    # ── DATA-INTEGRITY-HINWEIS ───────────────────────────────────────────────
+    if k_training_count >= 2:
+        st.markdown(
+            f'<div style="background:#e3b34122;border:1px solid #e3b341;border-radius:5px;'
+            f'padding:7px 12px;margin-top:6px;font-size:0.8em;">'
+            f'<span style="color:#e3b341;font-weight:700;">⚠️ DATA-INTEGRITY: Single-Source-Screening</span><br>'
+            f'<span style="color:#c9d1d9;">'
+            f'Alle K-Kriterien kommen aus Yahoo Finance (Stufe 3 · Single-Source). '
+            f'Für eine JACK-konforme Investment-Entscheidung: '
+            f'Mindestens Stufe 1 (SEC EDGAR / IR) + Stufe 2 (Koyfin / TIKR) manuell verifizieren.'
+            f'</span>'
+            f'</div>',
+            unsafe_allow_html=True)
 
 
 def _render_eps_beats(eps_hist: pd.DataFrame):
