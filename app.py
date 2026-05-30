@@ -2245,7 +2245,25 @@ def _render_dividenden_check(m: dict):
     if not div_yield and not div_rate:
         return   # kein Dividendentitel → SKIP
 
-    sym       = "€" if m.get("currency") == "EUR" else "$"
+    _currency  = m.get("currency", "USD")
+    _is_pence  = (_currency == "GBp")
+    _lookup    = "GBP" if _is_pence else _currency
+    sym        = "€" if _currency == "EUR" else ("p" if _is_pence else ("£" if _currency == "GBP" else "$"))
+    _show_eur  = _currency not in ("EUR",)
+
+    # Live FX-Rate holen
+    _fx_rates  = _fetch_eur_fx_rates()
+    _base_rate = _fx_rates.get(_lookup)
+    _fx_rate   = (_base_rate / 100.0) if (_is_pence and _base_rate) else _base_rate
+    if not _fx_rate:
+        _show_eur = False
+
+    def _eur_str(val):
+        """Gibt ' = €X.XXXX' zurück wenn EUR-Anzeige aktiv."""
+        if _show_eur and val is not None and _fx_rate:
+            return f" = €{val * _fx_rate:.4f}"
+        return ""
+
     payout    = m.get("payout_ratio")
     interval  = m.get("div_interval", "N/V")
     cagr1     = m.get("div_cagr1")
@@ -2257,42 +2275,53 @@ def _render_dividenden_check(m: dict):
     ex_div    = m.get("ex_dividend")
     div_hist  = m.get("div_hist_raw", pd.Series(dtype=float))
 
-    # Payout-Farbe
     _pc = "#3fb950" if (payout or 0) < 0.60 else ("#d29922" if (payout or 0) < 0.85 else "#da3633")
-    # Cuts-Farbe
-    _cc = "#3fb950" if cuts == 0 else ("#d29922" if cuts <= 1 else "#da3633")
+
+    # Header
+    _fx_badge = (
+        f' <span style="background:#21262d;border-radius:3px;padding:1px 6px;'
+        f'font-size:0.7em;color:#79c0ff;font-weight:400;">'
+        f'1 {_lookup} = €{_base_rate:.4f} [LIVE]</span>'
+    ) if (_show_eur and _base_rate) else ""
 
     st.markdown(
-        '<div style="color:#8b949e;font-size:0.7em;font-weight:700;text-transform:uppercase;'
-        'letter-spacing:1.5px;padding:4px 0 6px 0;border-bottom:1px solid #21262d;'
-        'margin-bottom:10px;">💰 DIVIDENDEN-CHECK</div>',
+        f'<div style="color:#8b949e;font-size:0.7em;font-weight:700;text-transform:uppercase;'
+        f'letter-spacing:1.5px;padding:4px 0 6px 0;border-bottom:1px solid #21262d;'
+        f'margin-bottom:10px;">💰 DIVIDENDEN-CHECK{_fx_badge}</div>',
         unsafe_allow_html=True)
 
     # ── Metriken-Grid (2×3) ──────────────────────────────────────────────────
     _d1, _d2, _d3 = st.columns(3)
     _d4, _d5, _d6 = st.columns(3)
 
-    def _dtile(col, label, value, color="#e6edf3"):
+    def _dtile(col, label, value, sub="", color="#e6edf3"):
+        _sub_html = (
+            f'<div style="color:#79c0ff;font-size:0.75em;margin-top:2px;">{sub}</div>'
+            if sub else ""
+        )
         col.markdown(
             f'<div class="mmtile">'
             f'<div class="mmlabel">{label}</div>'
             f'<div class="mmvalue" style="color:{color};">{value}</div>'
+            f'{_sub_html}'
             f'</div>',
             unsafe_allow_html=True)
 
     _dtile(_d1, "Dividende TTM",
-           f"{sym}{div_rate:.3f}" if div_rate else "N/V", "#e6edf3")
+           f"{sym}{div_rate:.3f}" if div_rate else "N/V",
+           _eur_str(div_rate) if div_rate else "")
     _dtile(_d2, "Dividendenrendite",
            f"{div_yield:.2%}" if div_yield else "N/V",
-           "#3fb950" if (div_yield or 0) >= 0.03 else "#d29922")
+           color="#3fb950" if (div_yield or 0) >= 0.03 else "#d29922")
     _dtile(_d3, "Ausschüttungsquote",
-           f"{payout:.1%}" if payout else "N/V", _pc)
-    _dtile(_d4, "Intervall", interval, "#79c0ff")
+           f"{payout:.1%}" if payout else "N/V", color=_pc)
+    _dtile(_d4, "Intervall", interval, color="#79c0ff")
     _dtile(_d5, "DGR 3J (CAGR)",
            f"{cagr3:.2%}" if cagr3 else "N/V",
-           "#3fb950" if (cagr3 or 0) >= 0.05 else "#d29922")
+           color="#3fb950" if (cagr3 or 0) >= 0.05 else "#d29922")
     _dtile(_d6, "Nächste (Schätzung)",
-           f"{sym}{next_est:.3f}" if next_est else "N/V", "#e6edf3")
+           f"{sym}{next_est:.4f}" if next_est else "N/V",
+           _eur_str(next_est) if next_est else "")
 
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
@@ -2351,15 +2380,19 @@ def _render_dividenden_check(m: dict):
                     'text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">'
                     'Letzte Ausschüttungen</div>',
                     unsafe_allow_html=True)
-                _hhtml = '<div style="background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:8px 14px;">'
+                _hhtml = (
+                    '<div style="background:#0d1117;border:1px solid #21262d;'
+                    'border-radius:6px;padding:8px 14px;">'
+                )
                 for _dt, _dv in _recent.items():
-                    _dt_str = str(_dt)[:7]   # JJJJ-MM
+                    _dt_str  = str(_dt)[:7]
+                    _eur_val = f" <span style='color:#79c0ff;font-size:0.85em;'>= €{_dv * _fx_rate:.4f}</span>" if (_show_eur and _fx_rate) else ""
                     _hhtml += (
                         f'<div style="display:flex;justify-content:space-between;'
                         f'align-items:center;padding:4px 0;border-bottom:1px solid #161b22;">'
                         f'<span style="color:#8b949e;font-size:0.82em;">🔵 {_dt_str}</span>'
                         f'<span style="color:#e6edf3;font-weight:700;font-family:monospace;">'
-                        f'{sym}{_dv:.4f}</span>'
+                        f'{sym}{_dv:.4f}{_eur_val}</span>'
                         f'</div>'
                     )
                 _hhtml += '</div>'
