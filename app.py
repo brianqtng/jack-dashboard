@@ -2575,6 +2575,12 @@ def _render_cockpit(symbol: str, m: dict, j: dict, hist: pd.DataFrame):
         elif abbruch.get("grenzfall"):
             st.warning(f"⚠️ GRENZFALL K={k_met}/{k_basis}", icon=None)
 
+    # ── Live FX-Rates laden (15min Cache) ────────────────────────────────────
+    _currency = m.get("currency", "USD")
+    _fx_rates = _fetch_eur_fx_rates()
+    _fx_rate  = _fx_rates.get(_currency)          # EUR pro 1 Fremdwährungseinheit
+    _show_eur = (_currency != "EUR") and (_fx_rate is not None)
+
     # ── MITTLERE SPALTE: Preis · Chart · 52W-Range ────────────────────────────
     with _cm:
         # Preis-Hero
@@ -2590,7 +2596,7 @@ def _render_cockpit(symbol: str, m: dict, j: dict, hist: pd.DataFrame):
             chg_arrow = ""
 
         _price_html = (
-            f'<div style="display:flex;align-items:baseline;gap:14px;padding:2px 0 8px 0;">'
+            f'<div style="display:flex;align-items:baseline;gap:14px;padding:2px 0 4px 0;">'
             f'<span class="price-hero" style="color:#e6edf3;">'
             f'{sym}{price:.2f}</span>'
         )
@@ -2600,10 +2606,23 @@ def _render_cockpit(symbol: str, m: dict, j: dict, hist: pd.DataFrame):
                 f'{chg_arrow} {sym}{abs(chg):.2f} ({chg_pct:+.2%})</span>'
             )
         _price_html += (
-            f'<span style="color:#8b949e;font-size:0.72em;">{m.get("currency","USD")}'
+            f'<span style="color:#8b949e;font-size:0.72em;">{_currency}'
             f' · {m.get("exchange","")}</span>'
             f'</div>'
         )
+        # EUR-Umrechnung direkt unter dem Preis (nur bei Nicht-EUR Titeln)
+        if _show_eur and price:
+            _price_eur = price * _fx_rate
+            _price_html += (
+                f'<div style="display:flex;align-items:center;gap:8px;'
+                f'padding:0 0 6px 0;margin-top:-2px;">'
+                f'<span style="color:#8b949e;font-size:0.72em;">≈</span>'
+                f'<span style="color:#79c0ff;font-size:1.1em;font-weight:700;'
+                f'font-family:monospace;">€{_price_eur:.2f}</span>'
+                f'<span style="background:#21262d;border-radius:3px;padding:1px 5px;'
+                f'font-size:0.62em;color:#8b949e;">LIVE · 1 {_currency} = €{_fx_rate:.4f}</span>'
+                f'</div>'
+            )
         st.markdown(_price_html, unsafe_allow_html=True)
 
         # 52W Range Bar
@@ -2612,14 +2631,17 @@ def _render_cockpit(symbol: str, m: dict, j: dict, hist: pd.DataFrame):
             _pos_pct = (price - lo52) / (hi52 - lo52) * 100
             _pos_pct = max(2, min(98, _pos_pct))
             _dot_col = "#3fb950" if _pos_pct >= 50 else "#d29922"
+            # EUR-Werte für 52W Range
+            _lo_eur_str = f" / €{lo52 * _fx_rate:.1f}" if _show_eur and lo52 else ""
+            _hi_eur_str = f" / €{hi52 * _fx_rate:.1f}" if _show_eur and hi52 else ""
             st.markdown(
                 f'<div style="padding:0 4px 8px 4px;">'
                 f'<div style="display:flex;justify-content:space-between;'
                 f'font-size:0.65em;color:#8b949e;margin-bottom:4px;">'
-                f'<span>52W Tief {sym}{lo52:.1f}</span>'
+                f'<span>52W Tief {sym}{lo52:.1f}{_lo_eur_str}</span>'
                 f'<span style="color:{_dot_col};font-weight:700;">'
                 f'{_pos_pct:.0f}% vom Tief</span>'
-                f'<span>52W Hoch {sym}{hi52:.1f}</span>'
+                f'<span>52W Hoch {sym}{hi52:.1f}{_hi_eur_str}</span>'
                 f'</div>'
                 f'<div class="range-bar-bg">'
                 f'<div class="range-dot" style="left:{_pos_pct}%;background:{_dot_col};'
@@ -5233,6 +5255,54 @@ def _fetch_macro_live() -> dict:
     return out
 
 
+@st.cache_data(ttl=900, show_spinner=False)   # 15-Min Cache
+def _fetch_eur_fx_rates() -> dict:
+    """Holt Live EUR-Basiswechselkurse via yfinance (15min Cache).
+    Gibt dict zurück: {currency: eur_per_unit} — also wie viele EUR = 1 Fremdwährungseinheit.
+    Beispiel: {"USD": 0.925, "GBP": 1.17, ...}
+    """
+    # EUR{CUR}=X → 1 EUR = X Einheiten der Fremdwährung
+    # Umkehrung: 1 Fremdwährungseinheit = 1/rate EUR
+    _pairs = {
+        "USD": "EURUSD=X",
+        "GBP": "EURGBP=X",
+        "JPY": "EURJPY=X",
+        "CHF": "EURCHF=X",
+        "CAD": "EURCAD=X",
+        "SEK": "EURSEK=X",
+        "NOK": "EURNOK=X",
+        "AUD": "EURAUD=X",
+        "HKD": "EURHKD=X",
+        "SGD": "EURSGD=X",
+    }
+    rates = {}
+    for _cur, _tk in _pairs.items():
+        try:
+            _r = yf.Ticker(_tk).info.get("regularMarketPrice") or yf.Ticker(_tk).info.get("currentPrice")
+            if _r and _r > 0:
+                rates[_cur] = round(1.0 / _r, 6)   # 1 Fremdwährung = X EUR
+        except Exception:
+            pass
+    # Fallback-Werte wenn Live nicht verfügbar
+    _fallback = {"USD": 0.924, "GBP": 1.173, "JPY": 0.0063, "CHF": 1.068,
+                 "CAD": 0.681, "SEK": 0.087, "NOK": 0.086, "AUD": 0.600,
+                 "HKD": 0.118, "SGD": 0.688}
+    for _cur, _fb in _fallback.items():
+        if _cur not in rates:
+            rates[_cur] = _fb
+    return rates
+
+
+def _to_eur(value: float, currency: str, rates: dict) -> float:
+    """Konvertiert einen Wert aus currency → EUR."""
+    if currency == "EUR" or value is None:
+        return value
+    rate = rates.get(currency)
+    if rate:
+        return value * rate
+    return None
+
+
 def _render_makro_radar():
     """MAKRO-RADAR — Live-Daten via yfinance (15min Cache) + Zinskurve + Crypto-Ampel."""
     with st.expander("🌍 MAKRO-RADAR [LIVE]", expanded=False):
@@ -6270,12 +6340,27 @@ def _render_fx_pflicht(m: dict):
     if currency == "EUR":
         return
     price = m.get("price") or 0
-    FX_RATES = {"USD": 0.92, "GBP": 1.17, "JPY": 0.0062, "CHF": 1.07, "CAD": 0.68, "SEK": 0.086}
-    fx = FX_RATES.get(currency, 1.0)
-    st.info(f"🌍 **FX-PFLICHT (Klasse A Regel #13):** Werte in **{currency}**. "
-            f"Approx. EUR-Rate: 1 {currency} ≈ EUR {fx:.4f} [TRAINING]. "
-            f"Aktueller Kurs {currency} {price:.2f} ≈ EUR {price * fx:.2f}. "
-            f"→ Präzise FX: ECB / Yahoo Finance Devisen.")
+    sym   = "€" if currency == "EUR" else ("£" if currency == "GBP" else "$")
+    # Live-Rates (15min Cache)
+    _rates = _fetch_eur_fx_rates()
+    fx     = _rates.get(currency)
+    _tag   = "[LIVE]" if fx else "[TRAINING]"
+    if not fx:
+        _fallback = {"USD": 0.924, "GBP": 1.173, "JPY": 0.0063, "CHF": 1.068,
+                     "CAD": 0.681, "SEK": 0.087, "NOK": 0.086, "AUD": 0.600}
+        fx = _fallback.get(currency, 1.0)
+    price_eur = price * fx
+    st.markdown(
+        f'<div style="background:#0d1117;border:1px solid #388bfd33;border-left:3px solid #388bfd;'
+        f'border-radius:4px;padding:6px 12px;margin:6px 0;">'
+        f'<span style="color:#388bfd;font-size:0.72em;font-weight:700;">🌍 FX-UMRECHNUNG {_tag}</span>'
+        f'<span style="color:#8b949e;font-size:0.72em;"> · '
+        f'1 {currency} = <b style="color:#79c0ff;">€{fx:.4f}</b> · '
+        f'Kurs <b style="color:#e6edf3;">{sym}{price:.2f}</b> = '
+        f'<b style="color:#79c0ff;">€{price_eur:.2f}</b>'
+        f'</span>'
+        f'</div>',
+        unsafe_allow_html=True)
 
 
 def _render_daten_hierarchie(m: dict = None):
