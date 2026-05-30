@@ -1559,9 +1559,97 @@ def _render_jack_summary(j: dict, m: dict):
 </div>""", unsafe_allow_html=True)
 
 
+# ── PRE-FLIGHT PLAUSIBILITÄTS-CHECK ──────────────────────────────────────────
+def _calc_plausibilitaet(m: dict) -> dict:
+    """Phase 1 der Analyse-Pipeline: Prüft alle Metriken auf Plausibilität
+    bevor K-Kriterien und Verdict berechnet werden."""
+    checks = []
+
+    def chk(name, ok, val_str, warn="", critical=False):
+        checks.append({"name": name, "ok": ok, "val": val_str,
+                        "warn": warn, "critical": critical})
+
+    rev   = m.get("revenue") or 0
+    price = m.get("price")
+    roic  = m.get("roic")
+    fcf_m = m.get("fcf_margin")
+    rc    = m.get("rev_cagr")
+    pe    = m.get("pe")
+    nd    = m.get("nd_ebitda")
+    ps    = (m.get("piotroski") or {}).get("score")
+    sbc   = m.get("sbc_intensity")
+    gm    = m.get("gross_margin")
+    opm   = m.get("op_margin")
+    shares = m.get("shares")
+    eps   = m.get("eps_cagr")
+
+    # ── Pflicht-Felder (Critical) ──────────────────────────────────────────────
+    chk("Kurs verfügbar",       price is not None and price > 0,
+        f"{price:.2f}" if price else "N/V",
+        "Kein gültiger Kurs → Bewertung unmöglich", critical=True)
+    chk("Umsatz verfügbar",     rev > 0,
+        cap_fmt(rev) if rev else "N/V",
+        "Umsatz = 0 → alle Margen-Metriken unbrauchbar", critical=True)
+    chk("Shares verfügbar",     shares is not None and shares > 0,
+        cap_fmt(shares) if shares else "N/V",
+        "Shares N/V → Market Cap / DCF unzuverlässig", critical=False)
+
+    # ── Plausibilitäts-Bounds ──────────────────────────────────────────────────
+    if roic is not None:
+        chk("ROIC Plausibel",   -0.50 <= roic <= 2.00, pct(roic),
+            "ROIC außerhalb -50%/+200% → TTM-Mismatch / Sondereffekt")
+    if fcf_m is not None:
+        chk("FCF-Marge Plausibel", -1.00 <= fcf_m <= 0.95, pct(fcf_m),
+            "FCF-Marge außerhalb -100%/+95% → Datenfehler möglich")
+    if gm is not None:
+        chk("Bruttomarge Plausibel", -0.50 <= gm <= 1.00, pct(gm),
+            "Bruttomarge < -50% oder > 100% → Berechnungsfehler")
+    if opm is not None:
+        chk("Op. Marge Plausibel", -2.00 <= opm <= 1.00, pct(opm),
+            "Op. Marge außerhalb -200%/+100% → Sondereffekt / Restrukturierung")
+    if rc is not None:
+        chk("Rev-CAGR Plausibel", -0.60 <= rc <= 2.00, pct(rc),
+            "CAGR > 200% → TTM/FY-Mismatch oder Akquisition")
+    if pe is not None and pe > 0:
+        chk("KGV Plausibel",    pe < 2000, f"{pe:.1f}x",
+            "KGV > 2000x → Verlustjahr / Einmaleffekt / kein reprä. Gewinn")
+    if nd is not None:
+        chk("ND/EBITDA Plausibel", nd < 30, f"{nd:.1f}x",
+            "ND/EBITDA > 30x → negatives EBITDA oder Extremverschuldung")
+    if ps is not None:
+        chk("Piotroski Plausibel", 0 <= ps <= 9, str(ps),
+            "Score außerhalb 0-9 → Berechnungsfehler")
+    if sbc is not None:
+        chk("SBC Plausibel",    0 <= sbc <= 3.00, pct(sbc),
+            "SBC > 300% → unrealistisch / yfinance-Datenfehler")
+    if eps is not None:
+        chk("EPS-CAGR Plausibel", -1.00 <= eps <= 5.00, pct(eps),
+            "EPS-CAGR > 500% → Basiseffekt / Einmalgewinn")
+
+    issues   = [c for c in checks if not c["ok"]]
+    critical = [c for c in issues if c.get("critical")]
+    n_ok     = sum(1 for c in checks if c["ok"])
+
+    return {
+        "checks":     checks,
+        "issues":     issues,
+        "n_ok":       n_ok,
+        "n_total":    len(checks),
+        "n_warn":     len(issues),
+        "n_critical": len(critical),
+        "plausibel":  len(critical) == 0,
+    }
+
+
 # ── JACK scoring ──────────────────────────────────────────────────────────────
 def calc_jack(m: dict) -> dict:
     j = {}
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # PHASE 1 — PLAUSIBILITÄTS-CHECK (vor jeder Berechnung)
+    # ═══════════════════════════════════════════════════════════════════════════
+    _plaus = _calc_plausibilitaet(m)
+    j["plausibilitaet"] = _plaus
 
     # --- K-BASIS auto-detect (Sonderregeln) — Prioritäten-Logik ---
     k_basis, mode, mode_reason = _auto_detect_k_basis(m)
@@ -1876,6 +1964,98 @@ def calc_jack(m: dict) -> dict:
 
     # --- FLAG-CHECKLIST (alle 9 Spec-Flags · nach WACC da roic>wacc Check) ---
     j["flags_checklist"] = _calc_flags_checklist(j, m)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ANALYSE-PIPELINE — Zusammenfassung aller Phasen (für _render_analyse_pipeline)
+    # Wird NACH allen Berechnungen aufgebaut → vollständiges Bild
+    # ═══════════════════════════════════════════════════════════════════════════
+    _plaus_r   = j.get("plausibilitaet", {})
+    _dcf_r     = j.get("dcf", {})
+    _moat_r    = j.get("moat", {})
+    _mgmt_r    = j.get("management", {})
+    _flags_r   = j.get("flags", [])
+    _abbruch_r = j.get("abbruch", {})
+    _st_r      = j.get("stress_test", {})
+    _conf_r    = j.get("konfidenz", ("🔴", "NIEDRIG", "#da3633"))
+    _dk_r      = j.get("daten_konfidenz", {})
+
+    _k_col  = "#3fb950" if k_met >= k_basis else ("#d29922" if k_met >= k_basis - 2 else "#da3633")
+    _e_col  = "#3fb950" if e_met >= len(E) * 0.6 else "#d29922"
+    _r_flags = [f for f in _flags_r if f.get("color") == "#da3633"]
+    _y_flags = [f for f in _flags_r if f.get("color") == "#d29922"]
+
+    def _pipe_status(ok, warn=False):
+        if ok:    return "✅", "#3fb950"
+        if warn:  return "⚠️", "#d29922"
+        return "❌", "#da3633"
+
+    _p1_ok, _p1_c = _pipe_status(
+        _plaus_r.get("n_critical", 1) == 0,
+        _plaus_r.get("n_warn", 0) > 0)
+    _p2_ok, _p2_c = _pipe_status(
+        _dk_r.get("pct", 0) >= 0.65,
+        0.50 <= _dk_r.get("pct", 0) < 0.65)
+    _p3_ok, _p3_c = "✅", "#3fb950"  # K-BASIS always determined
+    _p4_ok, _p4_c = _pipe_status(
+        k_met >= k_basis,
+        k_met >= k_basis - 2)
+    _p5_ok, _p5_c = _pipe_status(
+        e_met >= len(E) * 0.6,
+        e_met >= len(E) * 0.4)
+    _p6_ok, _p6_c = _pipe_status(
+        len(_r_flags) == 0,
+        len(_y_flags) > 0)
+    _p7_ok, _p7_c = _pipe_status(
+        _dcf_r.get("available", False),
+        not _dcf_r.get("available", False))
+    _p8_ok, _p8_c = _pipe_status(
+        (_moat_r.get("score", 0) >= 3 and _mgmt_r.get("score", 0) >= 3),
+        (_moat_r.get("score", 0) >= 2 or _mgmt_r.get("score", 0) >= 2))
+    _rating = j.get("rating", "SCHROTT")
+    _rs     = j.get("reaper_score", 1)
+    _r_col  = "#3fb950" if _rating == "KAUFEN" else ("#d29922" if _rating == "BEOBACHTEN" else "#da3633")
+    _p9_ok, _p9_c = _pipe_status(_rating == "KAUFEN", _rating == "BEOBACHTEN")
+
+    j["analyse_pipeline"] = [
+        {"nr": "01", "phase": "Plausibilitäts-Check",
+         "icon": _p1_ok, "color": _p1_c,
+         "detail": (f"{_plaus_r.get('n_ok',0)}/{_plaus_r.get('n_total',0)} Checks OK"
+                    + (f" · {_plaus_r.get('n_warn',0)} Warnungen" if _plaus_r.get('n_warn',0) else ""))},
+        {"nr": "02", "phase": "Daten-Vollständigkeit",
+         "icon": _p2_ok, "color": _p2_c,
+         "detail": (f"{_dk_r.get('available',0)}/{_dk_r.get('total',0)} Datenpunkte"
+                    f" · {_dk_r.get('quality','—')}")},
+        {"nr": "03", "phase": "K-BASIS Detection",
+         "icon": _p3_ok, "color": _p3_c,
+         "detail": f"{m.get('_k_basis_mode','5S')} · {m.get('_k_basis_reason','')[:50]}"},
+        {"nr": "04", "phase": "K-Prüfung (Gatekeeper)",
+         "icon": _p4_ok, "color": _p4_c,
+         "detail": (f"{k_met}/{k_basis} K-Kriterien bestanden"
+                    f" · adj. {k_met_adj:.1f}/{k_basis} · {k_training_count}× [TRAINING]")},
+        {"nr": "05", "phase": "E-Prüfung",
+         "icon": _p5_ok, "color": _p5_c,
+         "detail": f"{e_met}/{len(E)} E-Kriterien bestanden"},
+        {"nr": "06", "phase": "Flag-Check",
+         "icon": _p6_ok, "color": _p6_c,
+         "detail": (f"{len(_r_flags)} 🔴 · {len(_y_flags)} 🟡 aktiv"
+                    if (_r_flags or _y_flags) else "Keine kritischen Flags")},
+        {"nr": "07", "phase": "Valuation (DCF / Multiples)",
+         "icon": _p7_ok, "color": _p7_c,
+         "detail": (f"IV: {_dcf_r.get('iv_fmt','—')} · WACC: {pct(j.get('wacc_data',{}).get('wacc'))}"
+                    if _dcf_r.get("available") else "DCF nicht verfügbar (neg. FCF / Daten)")},
+        {"nr": "08", "phase": "Moat & Management",
+         "icon": _p8_ok, "color": _p8_c,
+         "detail": (f"Moat: {_moat_r.get('label','—')} · Mgmt: {_mgmt_r.get('score','—')}/5")},
+        {"nr": "09", "phase": "Verdict",
+         "icon": _p9_ok, "color": _r_col,
+         "detail": f"{_rating} · Reaper Score {_rs}/10 · Konfidenz {_conf_r[1]}"},
+    ]
+
+    # Plausibilitäts-Gate: kritische Mängel → Reaper Score deckeln
+    if _plaus_r.get("n_critical", 0) > 0:
+        j["reaper_score"] = min(j.get("reaper_score", 1), 4)
+        if j["rating"] == "KAUFEN":
+            j["rating"] = "BEOBACHTEN"
 
     return j
 
@@ -2612,6 +2792,79 @@ def _make_price_chart(symbol: str, hist: pd.DataFrame, m: dict) -> "go.Figure":
         return None
 
 
+def _render_analyse_pipeline(j: dict, m: dict):
+    """Zeigt die vollständige Analyse-Pipeline als visuellen Schritt-für-Schritt-Prozess.
+    Jede Phase zeigt Status + Detail — erst nach allen Phasen wird das Verdict sichtbar."""
+    pipeline  = j.get("analyse_pipeline", [])
+    plaus     = j.get("plausibilitaet", {})
+    if not pipeline:
+        return
+
+    _rating   = j.get("rating", "SCHROTT")
+    _rs       = j.get("reaper_score", 1)
+    _r_color  = "#3fb950" if _rating == "KAUFEN" else ("#d29922" if _rating == "BEOBACHTEN" else "#da3633")
+
+    with st.expander("🔬 ANALYSE-PIPELINE — Vollständige Prüfschritte vor dem Verdict",
+                     expanded=True):
+
+        # Header
+        st.markdown(
+            '<div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;'
+            'padding:8px 14px;margin-bottom:10px;font-family:monospace;font-size:0.78em;">'
+            '<span style="color:#8b949e;letter-spacing:1px;">JACK ANALYSE-SEQUENZ · '
+            'Alle 9 Phasen werden vollständig durchlaufen bevor das Verdict ausgegeben wird</span>'
+            '</div>',
+            unsafe_allow_html=True)
+
+        # Pipeline-Schritte
+        rows = ""
+        for step in pipeline:
+            _is_verdict = step["nr"] == "09"
+            _bg = f'background:{step["color"]}15;' if _is_verdict else "background:#161b22;"
+            _border = f'border-left:3px solid {step["color"]};' if _is_verdict else ""
+            rows += (
+                f'<tr style="{_bg}{_border}">'
+                f'<td style="padding:6px 10px;text-align:center;font-size:1em;">{step["icon"]}</td>'
+                f'<td style="padding:6px 4px;color:#8b949e;font-size:0.72em;'
+                f'font-family:monospace;white-space:nowrap;">Phase {step["nr"]}</td>'
+                f'<td style="padding:6px 10px;color:{step["color"]};font-weight:600;'
+                f'font-size:0.82em;white-space:nowrap;">{step["phase"]}</td>'
+                f'<td style="padding:6px 10px;color:#8b949e;font-size:0.80em;">{step["detail"]}</td>'
+                f'</tr>'
+            )
+
+        st.markdown(
+            f'<table style="width:100%;border-collapse:collapse;">'
+            f'<thead><tr>'
+            f'<th style="color:#8b949e;font-size:0.68em;padding:5px 10px;width:32px;'
+            f'border-bottom:1px solid #30363d;">OK</th>'
+            f'<th style="color:#8b949e;font-size:0.68em;padding:5px 4px;'
+            f'border-bottom:1px solid #30363d;">Phase</th>'
+            f'<th style="color:#8b949e;font-size:0.68em;padding:5px 10px;'
+            f'border-bottom:1px solid #30363d;">Prüfschritt</th>'
+            f'<th style="color:#8b949e;font-size:0.68em;padding:5px 10px;'
+            f'border-bottom:1px solid #30363d;">Ergebnis</th>'
+            f'</tr></thead>'
+            f'<tbody style="background:#161b22;">{rows}</tbody></table>',
+            unsafe_allow_html=True)
+
+        # Plausibilitäts-Warnungen
+        plaus_issues = plaus.get("issues", [])
+        if plaus_issues:
+            st.markdown("---")
+            st.markdown(
+                '<span style="color:#d29922;font-weight:700;font-size:0.82em;">'
+                '⚠️ Plausibilitäts-Warnungen (Phase 01):</span>',
+                unsafe_allow_html=True)
+            for iss in plaus_issues:
+                _ic = "🔴" if iss.get("critical") else "🟡"
+                st.markdown(
+                    f'<div style="color:#8b949e;font-size:0.78em;margin:2px 0 2px 12px;">'
+                    f'{_ic} <b style="color:#c9d1d9;">{iss["name"]}</b>: '
+                    f'{iss["val"]} — {iss["warn"]}</div>',
+                    unsafe_allow_html=True)
+
+
 def _render_verdict_reason(j: dict, m: dict, rc_hex: str):
     """Zeigt kompakte Begründung direkt unter dem Verdict-Panel:
     Welche K-Kriterien sind gefailed/N/V, was fehlt für ein Upgrade."""
@@ -3033,6 +3286,11 @@ def render(symbol: str, m: dict, j: dict, hist: pd.DataFrame, eps_hist: pd.DataF
 
     # ── COCKPIT (Bloomberg-Terminal-Stil) ────────────────────────────────────
     _render_cockpit(symbol, m, j, hist)
+
+    st.markdown("---")
+
+    # ── ANALYSE-PIPELINE (vollständige Prüfschritte vor dem Verdict) ─────────
+    _render_analyse_pipeline(j, m)
 
     st.markdown("---")
 
