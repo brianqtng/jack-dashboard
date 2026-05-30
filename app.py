@@ -2522,6 +2522,109 @@ def _make_price_chart(symbol: str, hist: pd.DataFrame, m: dict) -> "go.Figure":
         return None
 
 
+def _render_verdict_reason(j: dict, m: dict, rc_hex: str):
+    """Zeigt kompakte Begründung direkt unter dem Verdict-Panel:
+    Welche K-Kriterien sind gefailed/N/V, was fehlt für ein Upgrade."""
+    rating  = j.get("rating", "SCHROTT")
+    K       = j.get("K", {})
+    rs      = j.get("reaper_score", 0)
+    k_met   = j.get("k_met", 0)
+    k_basis = j.get("k_basis", 5)
+    abbruch = j.get("abbruch", {})
+
+    # Failed K-Kriterien sammeln
+    failed_k = [(name, v["val"]) for name, v in K.items()
+                if not v.get("pass") and v.get("avail", True)]
+    nv_k     = [(name, v["val"]) for name, v in K.items()
+                if not v.get("avail", True)]
+
+    if rating == "KAUFEN":
+        # Kurze Bestätigung — was macht es gut
+        st.markdown(
+            f'<div style="background:#0d1117;border:1px solid #238636;border-radius:5px;'
+            f'padding:8px 10px;margin-top:6px;font-size:0.72em;">'
+            f'<div style="color:#3fb950;font-weight:700;margin-bottom:4px;">✅ Warum KAUFEN</div>'
+            f'<div style="color:#8b949e;line-height:1.5;">'
+            f'Alle {k_basis} K-Kriterien erfüllt. Reaper Score {rs}/10 '
+            f'zeigt strukturelle Qualität. Kein disqualifizierendes Flag aktiv.'
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True)
+        return
+
+    # Haupt-Blocker ermitteln
+    _blocker_lines = []
+
+    if abbruch.get("abort"):
+        _blocker_lines.append(
+            f'<div style="color:#da3633;font-weight:700;">⛔ Sofort-Abbruch aktiv</div>'
+            f'<div style="color:#8b949e;">{abbruch.get("reason","")}</div>'
+        )
+    elif nv_k:
+        for _n, _v in nv_k[:2]:
+            _blocker_lines.append(
+                f'<div style="display:flex;justify-content:space-between;">'
+                f'<span style="color:#da3633;">⊘ N/V: {_n}</span>'
+                f'<span style="color:#8b949e;font-size:0.9em;">{_v}</span>'
+                f'</div>'
+            )
+
+    for _n, _v in failed_k[:4]:
+        _blocker_lines.append(
+            f'<div style="display:flex;justify-content:space-between;'
+            f'padding:1px 0;border-bottom:1px solid #21262d;">'
+            f'<span style="color:#da3633;">❌ {_n}</span>'
+            f'<span style="color:#8b949e;font-size:0.9em;">{_v}</span>'
+            f'</div>'
+        )
+
+    if not _blocker_lines:
+        # Niedrigem Reaper Score
+        _blocker_lines.append(
+            f'<div style="color:#d29922;">⚠ Reaper Score {rs}/10 — '
+            f'K erfüllt ({k_met}/{k_basis}), aber Qualität unzureichend</div>'
+        )
+
+    # Upgrade-Hinweis
+    if rating == "SCHROTT":
+        _missing = k_basis - k_met
+        if _missing > 0 and failed_k:
+            _top_fix = failed_k[0][0]
+            _upgrade_hint = (
+                f'Für <b style="color:#d29922;">BEOBACHTEN</b>: '
+                f'mind. {max(0, k_basis-2)}/{k_basis} K erfüllen — '
+                f'Priorität: <i>{_top_fix}</i>'
+            )
+        else:
+            _upgrade_hint = (
+                f'Für <b style="color:#d29922;">BEOBACHTEN</b>: '
+                f'Reaper Score auf ≥4 verbessern + Flags auflösen'
+            )
+    else:  # BEOBACHTEN
+        _upgrade_hint = (
+            f'Für <b style="color:#3fb950;">KAUFEN</b>: '
+            f'Alle {k_basis} K-Kriterien + Score ≥7 + keine roten Flags'
+        )
+
+    _border_col = "#da3633" if rating == "SCHROTT" else "#d29922"
+    _title      = "Warum SCHROTT" if rating == "SCHROTT" else "Warum BEOBACHTEN"
+    _title_col  = "#da3633" if rating == "SCHROTT" else "#d29922"
+
+    _html = (
+        f'<div style="background:#0d1117;border:1px solid {_border_col}33;'
+        f'border-left:3px solid {_border_col};border-radius:5px;'
+        f'padding:8px 10px;margin-top:6px;font-size:0.72em;">'
+        f'<div style="color:{_title_col};font-weight:700;margin-bottom:5px;">⚡ {_title}</div>'
+        f'<div style="line-height:1.7;">'
+        + "".join(_blocker_lines) +
+        f'</div>'
+        f'<div style="margin-top:6px;padding-top:5px;border-top:1px solid #21262d;'
+        f'color:#8b949e;font-size:0.9em;">{_upgrade_hint}</div>'
+        f'</div>'
+    )
+    st.markdown(_html, unsafe_allow_html=True)
+
+
 def _render_cockpit(symbol: str, m: dict, j: dict, hist: pd.DataFrame):
     """
     Bloomberg-Terminal Cockpit: 3-Spalten-Layout
@@ -2633,6 +2736,9 @@ def _render_cockpit(symbol: str, m: dict, j: dict, hist: pd.DataFrame):
             st.error(f"⛔ {abbruch['reason']}", icon=None)
         elif abbruch.get("grenzfall"):
             st.warning(f"⚠️ GRENZFALL K={k_met}/{k_basis}", icon=None)
+
+        # ── Begründung: Warum dieses Rating? ─────────────────────────────────
+        _render_verdict_reason(j, m, _rc_hex)
 
     # ── Live FX-Rates laden (15min Cache) ────────────────────────────────────
     _currency     = m.get("currency", "USD")
