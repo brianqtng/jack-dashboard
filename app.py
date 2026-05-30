@@ -2576,10 +2576,14 @@ def _render_cockpit(symbol: str, m: dict, j: dict, hist: pd.DataFrame):
             st.warning(f"⚠️ GRENZFALL K={k_met}/{k_basis}", icon=None)
 
     # ── Live FX-Rates laden (15min Cache) ────────────────────────────────────
-    _currency = m.get("currency", "USD")
-    _fx_rates = _fetch_eur_fx_rates()
-    _fx_rate  = _fx_rates.get(_currency)          # EUR pro 1 Fremdwährungseinheit
-    _show_eur = (_currency != "EUR") and (_fx_rate is not None)
+    _currency     = m.get("currency", "USD")
+    _fx_rates     = _fetch_eur_fx_rates()
+    # GBp = brit. Pence (1/100 GBP) — yfinance gibt "GBp" zurück, Kurse in Pence
+    _is_gbp_pence = (_currency == "GBp")
+    _lookup_cur   = "GBP" if _is_gbp_pence else _currency
+    _base_rate    = _fx_rates.get(_lookup_cur)     # EUR pro 1 GBP bzw. 1 Fremdwährung
+    _fx_rate      = (_base_rate / 100.0) if (_is_gbp_pence and _base_rate) else _base_rate
+    _show_eur     = (_currency not in ("EUR",)) and (_fx_rate is not None)
 
     # ── MITTLERE SPALTE: Preis · Chart · 52W-Range ────────────────────────────
     with _cm:
@@ -2610,20 +2614,23 @@ def _render_cockpit(symbol: str, m: dict, j: dict, hist: pd.DataFrame):
             f' · {m.get("exchange","")}</span>'
             f'</div>'
         )
-        # EUR-Umrechnung direkt unter dem Preis (nur bei Nicht-EUR Titeln)
+        st.markdown(_price_html, unsafe_allow_html=True)
+
+        # EUR-Umrechnung als eigener Block direkt darunter
         if _show_eur and price:
             _price_eur = price * _fx_rate
-            _price_html += (
+            _cur_disp  = "GBP" if _is_gbp_pence else _currency
+            st.markdown(
                 f'<div style="display:flex;align-items:center;gap:8px;'
-                f'padding:0 0 6px 0;margin-top:-2px;">'
-                f'<span style="color:#8b949e;font-size:0.72em;">≈</span>'
-                f'<span style="color:#79c0ff;font-size:1.1em;font-weight:700;'
+                f'padding:2px 0 8px 0;margin-top:-4px;">'
+                f'<span style="color:#8b949e;font-size:0.85em;">≈</span>'
+                f'<span style="color:#79c0ff;font-size:1.15em;font-weight:700;'
                 f'font-family:monospace;">€{_price_eur:.2f}</span>'
-                f'<span style="background:#21262d;border-radius:3px;padding:1px 5px;'
-                f'font-size:0.62em;color:#8b949e;">LIVE · 1 {_currency} = €{_fx_rate:.4f}</span>'
-                f'</div>'
-            )
-        st.markdown(_price_html, unsafe_allow_html=True)
+                f'<span style="background:#21262d;border-radius:3px;padding:2px 7px;'
+                f'font-size:0.65em;color:#8b949e;">'
+                f'LIVE · 1 {_cur_disp} = €{_base_rate:.4f}</span>'
+                f'</div>',
+                unsafe_allow_html=True)
 
         # 52W Range Bar
         hi52 = m.get("hi52"); lo52 = m.get("lo52")
