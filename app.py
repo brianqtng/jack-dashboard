@@ -1261,22 +1261,34 @@ def _calc_daten_konfidenz(m: dict) -> dict:
       LIVE = Echtzeitkurs
       N/V  = nicht verfügbar
     """
+    # Stufe-Mapping: Tag → (Stufe-Label, Stufe-Sort-Order)
+    _TAG_STUFE = {
+        "S1":       ("Stufe 1", 1), "VERIFIED":  ("Stufe 1", 1),
+        "S2":       ("Stufe 2", 2),
+        "LIVE":     ("LIVE",    3),
+        "S3":       ("Stufe 3", 4), "TRAINING":  ("Stufe 3", 4),
+        "S4":       ("Stufe 4", 5), "ESTIMATE":  ("Stufe 4", 5),
+        "N/V":      ("N/V",     9),
+    }
+
     def _item(name: str, field, source_if_avail: str) -> dict:
-        avail = field is not None
-        tag   = source_if_avail if avail else "N/V"
-        conf  = "HOCH"   if avail and tag in ("LIVE", "S1", "S2", "VERIFIED") else \
-                "MITTEL"  if avail and tag in ("S3", "S4", "TRAINING", "ESTIMATE") else \
-                "NIEDRIG"
+        avail  = field is not None
+        tag    = source_if_avail if avail else "N/V"
+        conf   = "HOCH"   if avail and tag in ("LIVE", "S1", "S2", "VERIFIED") else \
+                 "MITTEL"  if avail and tag in ("S3", "S4", "TRAINING", "ESTIMATE") else \
+                 "NIEDRIG"
+        stufe_lbl, sort_key = _TAG_STUFE.get(tag, ("?", 99))
         return {"Datenpunkt": name, "✓": "✅" if avail else "❌",
-                "Quelle": tag, "Konfidenz": conf}
+                "Quelle": tag, "Konfidenz": conf,
+                "Stufe": stufe_lbl, "_sort": sort_key}
 
     piotr = m.get("piotroski", {})
     _rev3 = (m.get("revenues") or [])
     items = [
-        # LIVE — Echtzeitdaten
+        # LIVE — Echtzeitkurs (immer verfügbar)
         _item("Kursdaten / Preis",       m.get("price"),            "LIVE"),
         _item("Marktkapitalisierung",    m.get("mktcap"),           "LIVE"),
-        # TRAINING — yfinance Single-Source (Stufe 3) · Für JACK-Konformität: Stufe 1+2 verifizieren
+        # Stufe 3 (TRAINING) — yfinance Single-Source · für K-Kriterien
         _item("Umsatz (3+ Jahre)",       _rev3[0] if len(_rev3) >= 3 else None, "TRAINING"),
         _item("Brutto-/Op. Marge",       m.get("gross_margin"),     "TRAINING"),
         _item("FCF-Marge (real/SBC)",    m.get("real_fcf_margin"),  "TRAINING"),
@@ -1284,11 +1296,13 @@ def _calc_daten_konfidenz(m: dict) -> dict:
         _item("Verschuldung (ND/EBITDA)",m.get("nd_ebitda"),        "TRAINING"),
         _item("Piotroski F-Score",       piotr.get("score") if piotr.get("details") else None, "TRAINING"),
         _item("SBC-Quote",               m.get("sbc_intensity"),    "TRAINING"),
-        # ESTIMATE — Berechnete/abgeleitete Metriken (nur E-Kriterien & WACC)
+        # Stufe 4 (ESTIMATE) — Berechnete Metriken · nur E-Kriterien & WACC
         _item("EPS-CAGR",                m.get("eps_cagr"),         "ESTIMATE"),
         _item("Rev-CAGR",                m.get("rev_cagr"),         "ESTIMATE"),
         _item("Analysten-Konsens",       m.get("target_price"),     "ESTIMATE"),
     ]
+    # Nach Stufe sortieren
+    items = sorted(items, key=lambda x: x.get("_sort", 99))
 
     available  = sum(1 for it in items if it["✓"] == "✅")
     total      = len(items)
@@ -4177,34 +4191,73 @@ def _render_daten_konfidenz(j: dict, m: dict):
         col1, col2 = st.columns([1.4, 1])
 
         with col1:
-            df_dk = pd.DataFrame(items)[["Datenpunkt", "✓", "Quelle", "Konfidenz"]]
-            # Color-code each row
-            html_rows = ""
-            for _, row in df_dk.iterrows():
-                c = {"HOCH": "#3fb950", "MITTEL": "#d29922", "NIEDRIG": "#da3633"}.get(row["Konfidenz"], "#8b949e")
-                tag_c = TAG_COLOR.get(row["Quelle"], "#8b949e")
-                html_rows += (
-                    f'<tr>'
-                    f'<td style="color:#c9d1d9;padding:5px 10px;font-size:0.82em;">{row["Datenpunkt"]}</td>'
-                    f'<td style="text-align:center;padding:5px 8px;">{row["✓"]}</td>'
-                    f'<td style="padding:5px 8px;">'
-                    f'<span style="background:{tag_c}22;border:1px solid {tag_c};color:{tag_c};'
-                    f'border-radius:3px;padding:1px 5px;font-size:0.72em;font-weight:700;">'
-                    f'{row["Quelle"]}</span></td>'
-                    f'<td style="color:{c};font-size:0.82em;font-weight:600;padding:5px 8px;">'
-                    f'{row["Konfidenz"]}</td>'
-                    f'</tr>'
+            # Stufe-Metadaten
+            _STUFE_META = {
+                "Stufe 1": ("#3fb950", "⭐ Stufe 1", "[GOLD STANDARD]", "SEC EDGAR / 10-K / IR"),
+                "Stufe 2": ("#79c0ff", "Stufe 2",   "[VERIFIED]",      "Koyfin · TIKR · StockAnalysis"),
+                "LIVE":    ("#388bfd", "LIVE",       "[LIVE]",          "Echtzeitkurs (yfinance)"),
+                "Stufe 3": ("#e3b341", "Stufe 3",    "[TRAINING]",      "yfinance Single-Source"),
+                "Stufe 4": ("#d29922", "Stufe 4",    "[ESTIMATE]",      "Abgeleitet / WACC"),
+            }
+
+            # Items nach Stufe gruppieren
+            _groups = {}
+            for it in items:
+                _s = it.get("Stufe", "?")
+                _groups.setdefault(_s, []).append(it)
+
+            html_table = (
+                '<table style="width:100%;border-collapse:collapse;font-size:0.82em;">'
+                '<thead><tr>'
+                '<th style="color:#8b949e;font-size:0.75em;padding:6px 8px;text-align:left;'
+                'border-bottom:1px solid #30363d;">Stufe</th>'
+                '<th style="color:#8b949e;font-size:0.75em;padding:6px 10px;text-align:left;'
+                'border-bottom:1px solid #30363d;">Datenpunkt</th>'
+                '<th style="color:#8b949e;font-size:0.75em;padding:6px 8px;'
+                'border-bottom:1px solid #30363d;">✓</th>'
+                '<th style="color:#8b949e;font-size:0.75em;padding:6px 8px;'
+                'border-bottom:1px solid #30363d;">Konfidenz</th>'
+                '</tr></thead><tbody style="background:#161b22;">'
+            )
+
+            # Stufe-Reihenfolge wie in Daten-Hierarchie: 1 → 2 → LIVE → 3 → 4
+            for _stufe_key in ["Stufe 1", "Stufe 2", "LIVE", "Stufe 3", "Stufe 4"]:
+                _grp = _groups.get(_stufe_key, [])
+                if not _grp:
+                    continue
+                _sc, _slbl, _stag, _ssrc = _STUFE_META.get(_stufe_key,
+                    ("#8b949e", _stufe_key, "", ""))
+                # Stufe-Gruppenzeile (Section Header)
+                html_table += (
+                    f'<tr style="background:#0d1117;">'
+                    f'<td colspan="4" style="padding:5px 8px;border-top:1px solid #30363d;">'
+                    f'<span style="color:{_sc};font-weight:700;font-size:0.82em;">{_slbl}</span>'
+                    f'&nbsp;&nbsp;'
+                    f'<span style="background:{_sc}22;border:1px solid {_sc};color:{_sc};'
+                    f'border-radius:3px;padding:1px 5px;font-size:0.68em;font-weight:700;">'
+                    f'{_stag}</span>'
+                    f'<span style="color:#6e7681;font-size:0.72em;margin-left:8px;">{_ssrc}</span>'
+                    f'</td></tr>'
                 )
-            st.markdown(
-                f'<table style="width:100%;border-collapse:collapse;">'
-                f'<thead><tr>'
-                f'<th style="color:#8b949e;font-size:0.75em;padding:6px 10px;text-align:left;'
-                f'border-bottom:1px solid #30363d;">Datenpunkt</th>'
-                f'<th style="color:#8b949e;font-size:0.75em;padding:6px 8px;border-bottom:1px solid #30363d;">✓</th>'
-                f'<th style="color:#8b949e;font-size:0.75em;padding:6px 8px;border-bottom:1px solid #30363d;">Quelle</th>'
-                f'<th style="color:#8b949e;font-size:0.75em;padding:6px 8px;border-bottom:1px solid #30363d;">Konfidenz</th>'
-                f'</tr></thead><tbody style="background:#161b22;">{html_rows}</tbody></table>',
-                unsafe_allow_html=True)
+                # Datenpunkte dieser Stufe
+                for it in _grp:
+                    _c = {"HOCH": "#3fb950", "MITTEL": "#d29922",
+                          "NIEDRIG": "#da3633"}.get(it["Konfidenz"], "#8b949e")
+                    html_table += (
+                        f'<tr>'
+                        f'<td style="background:#161b22;padding:4px 8px;border:1px solid #21262d;'
+                        f'color:{_sc};font-size:0.78em;"></td>'
+                        f'<td style="background:#161b22;color:#c9d1d9;padding:4px 10px;'
+                        f'border:1px solid #21262d;">{it["Datenpunkt"]}</td>'
+                        f'<td style="background:#161b22;text-align:center;padding:4px 8px;'
+                        f'border:1px solid #21262d;">{it["✓"]}</td>'
+                        f'<td style="background:#161b22;color:{_c};font-weight:600;'
+                        f'padding:4px 8px;border:1px solid #21262d;">{it["Konfidenz"]}</td>'
+                        f'</tr>'
+                    )
+
+            html_table += '</tbody></table>'
+            st.markdown(html_table, unsafe_allow_html=True)
 
         with col2:
             # Overall quality badge
