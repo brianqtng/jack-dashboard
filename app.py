@@ -7514,15 +7514,58 @@ def _render_battle(ta: str, ma: dict, ja: dict, tb: str, mb: dict, jb: dict):
 # ══════════════════════════════════════════════════════════════════════════════
 # 💼 DEPOT DASHBOARD — Portfolio · Allokation · Performance · Dividenden
 # ══════════════════════════════════════════════════════════════════════════════
+
+# Brian's Portfolio — Ø EK in EUR (Broker-Basis), Stand: 2025/2026
+_DEPOT_DEFAULT = [
+    {"ticker": "NVO",      "shares": 150.0,  "cost_basis": 39.51,    "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa"},
+    {"ticker": "SOFI",     "shares": 250.0,  "cost_basis": 10.45,    "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "RMS.PA",   "shares": 1.0,    "cost_basis": 1905.09,  "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa"},
+    {"ticker": "CSU.TO",   "shares": 1.0,    "cost_basis": 1380.00,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "NOW",      "shares": 20.0,   "cost_basis": 97.45,    "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "MELI",     "shares": 1.0,    "cost_basis": 1442.80,  "purchase_date": "", "asset_class": "Aktie", "region_override": "LatAm"},
+    {"ticker": "INTU",     "shares": 4.0,    "cost_basis": 426.93,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "SNPS",     "shares": 4.0,    "cost_basis": 341.53,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "MSFT",     "shares": 4.0,    "cost_basis": 345.25,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "MUV2.DE",  "shares": 2.0,    "cost_basis": 525.50,   "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa"},
+    {"ticker": "6861.T",   "shares": 3.0,    "cost_basis": 319.80,   "purchase_date": "", "asset_class": "Aktie", "region_override": "Japan"},
+    {"ticker": "PGHN.SW",  "shares": 1.0,    "cost_basis": 886.00,   "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa"},
+    {"ticker": "GRAB",     "shares": 270.0,  "cost_basis": 4.07,     "purchase_date": "", "asset_class": "Aktie", "region_override": "Asien"},
+    {"ticker": "DB1.DE",   "shares": 3.0,    "cost_basis": 235.60,   "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa"},
+    {"ticker": "SPGI",     "shares": 2.0,    "cost_basis": 305.65,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "CRWD",     "shares": 2.0,    "cost_basis": 342.35,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "HLI",      "shares": 5.0,    "cost_basis": 119.80,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "CTAS",     "shares": 4.0,    "cost_basis": 156.86,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "BR",       "shares": 8.0,    "cost_basis": 139.96,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "AMZN",     "shares": 3.0,    "cost_basis": 169.90,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "BN",       "shares": 15.0,   "cost_basis": 33.70,    "purchase_date": "", "asset_class": "Aktie", "region_override": "USA/KAN"},
+    {"ticker": "V",        "shares": 2.0,    "cost_basis": 266.25,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "8001.T",   "shares": 100.0,  "cost_basis": 10.935,   "purchase_date": "", "asset_class": "Aktie", "region_override": "Japan"},
+    {"ticker": "3064.T",   "shares": 50.0,   "cost_basis": 10.70,    "purchase_date": "", "asset_class": "Aktie", "region_override": "Japan"},
+    {"ticker": "SYK",      "shares": 4.0,    "cost_basis": 267.43,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "NETC.CO",  "shares": 20.0,   "cost_basis": 53.95,    "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa"},
+    {"ticker": "ISRG",     "shares": 2.0,    "cost_basis": 392.10,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+]
+
+# Näherungsweise FX-Raten → EUR (für P&L-Approximation; kein Ersatz für Live-Kurse)
+_DEPOT_FX_EUR = {
+    "EUR": 1.0000, "USD": 0.9174, "CAD": 0.6711,
+    "JPY": 0.0062, "CHF": 1.0638, "DKK": 0.1342,
+    "GBP": 1.1765, "SEK": 0.0870, "HKD": 0.1176,
+}
+
+
 def _render_depot():
     """MODUS G: Depot Dashboard — Portfolio, Allokation, Dividenden, Performance."""
 
     st.markdown("## 💼 DEPOT DASHBOARD")
-    st.caption("Positionen werden lokal in der Browser-Session gespeichert und sind nach einem Reload zurückgesetzt.")
+    st.caption("Positionen werden in der Browser-Session gespeichert. "
+               "Beim ersten Aufruf wird dein Portfolio automatisch geladen.")
 
-    # ── Session-State Init ────────────────────────────────────────────────────
+    # ── Session-State Init — automatisch mit Portfolio laden ──────────────────
     if "depot_positions" not in st.session_state:
-        st.session_state.depot_positions = []
+        st.session_state.depot_positions = [dict(p) for p in _DEPOT_DEFAULT]
+    if "depot_fx_note_shown" not in st.session_state:
+        st.session_state.depot_fx_note_shown = False
 
     # ── Position hinzufügen ───────────────────────────────────────────────────
     _no_pos = len(st.session_state.depot_positions) == 0
@@ -7575,72 +7618,81 @@ def _render_depot():
         _live = {p["ticker"]: _fetch_depot_ticker(p["ticker"]) for p in _positions}
 
     # ── Berechnungen ──────────────────────────────────────────────────────────
-    _rows          = []
-    _total_invested = 0.0
-    _total_current  = 0.0
+    # Kaufkurs ist immer in EUR (Broker-Basis).
+    # Aktueller Kurs kommt in Fremdwährung (USD/JPY/...) → Näherungs-FX für P&L.
+    _rows           = []
+    _total_invested = 0.0   # EUR, exakt
+    _total_curr_eur = 0.0   # EUR, approx via FX-Näherung
 
     for _p in _positions:
         _d         = _live.get(_p["ticker"], {})
         _price     = _d.get("price") or 0.0
         _shares    = _p["shares"]
-        _cost      = _p["cost_basis"]
-        _curr_val  = _price * _shares
-        _inv_val   = (_cost * _shares) if _cost > 0 else None
-        _pnl       = (_curr_val - _inv_val) if _inv_val else None
-        _pnl_pct   = (_pnl / _inv_val) if (_inv_val and _inv_val > 0) else None
-        _currency  = _d.get("currency", "USD")
+        _cost      = _p["cost_basis"]          # in EUR
+        _currency  = _d.get("currency") or "USD"
+        _fx        = _DEPOT_FX_EUR.get(_currency, 1.0)
         _sym_c     = "€" if _currency == "EUR" else ("£" if _currency == "GBP" else ("¥" if _currency in ("JPY", "CNY") else "$"))
-        _region    = _p.get("region_override") or _d.get("country") or "Unbekannt"
-        _div_ann   = (_d.get("div_rate") or 0.0) * _shares
+        _curr_val_nat = _price * _shares                 # in native currency
+        _curr_val_eur = _price * _shares * _fx           # approx in EUR
+        _inv_val      = (_cost * _shares) if _cost > 0 else None   # EUR, exact
+        _pnl_eur      = (_curr_val_eur - _inv_val) if _inv_val else None
+        _pnl_pct      = (_pnl_eur / _inv_val) if (_inv_val and _inv_val > 0) else None
+        _region       = _p.get("region_override") or _d.get("country") or "Unbekannt"
+        _div_ann      = (_d.get("div_rate") or 0.0) * _shares * _fx  # approx EUR
 
         _rows.append({
-            "ticker":      _p["ticker"],
-            "name":        _d.get("name", _p["ticker"]),
-            "shares":      _shares,
-            "currency":    _currency,
-            "sym":         _sym_c,
-            "price":       _price,
-            "cost_basis":  _cost,
-            "curr_val":    _curr_val,
-            "inv_val":     _inv_val,
-            "pnl":         _pnl,
-            "pnl_pct":     _pnl_pct,
-            "sector":      _d.get("sector") or "Unbekannt",
-            "industry":    _d.get("industry") or "Unbekannt",
-            "country":     _d.get("country") or "Unbekannt",
-            "region":      _region,
-            "asset_class": _p.get("asset_class", "Aktie"),
-            "div_yield":   _d.get("div_yield") or 0.0,
-            "div_rate":    _d.get("div_rate") or 0.0,
-            "div_ann":     _div_ann,
-            "week52_high": _d.get("week52_high"),
-            "week52_low":  _d.get("week52_low"),
+            "ticker":         _p["ticker"],
+            "name":           _d.get("name", _p["ticker"]),
+            "shares":         _shares,
+            "currency":       _currency,
+            "sym":            _sym_c,
+            "price":          _price,          # native currency
+            "cost_basis":     _cost,           # EUR
+            "curr_val_nat":   _curr_val_nat,   # native currency
+            "curr_val_eur":   _curr_val_eur,   # approx EUR
+            "inv_val":        _inv_val,        # EUR exact
+            "pnl_eur":        _pnl_eur,        # approx EUR
+            "pnl_pct":        _pnl_pct,
+            "fx":             _fx,
+            "sector":         _d.get("sector") or "Unbekannt",
+            "industry":       _d.get("industry") or "Unbekannt",
+            "country":        _d.get("country") or "Unbekannt",
+            "region":         _region,
+            "asset_class":    _p.get("asset_class", "Aktie"),
+            "div_yield":      _d.get("div_yield") or 0.0,
+            "div_rate":       _d.get("div_rate") or 0.0,
+            "div_ann_eur":    _div_ann,         # approx EUR
         })
-        _total_current += _curr_val
+        _total_curr_eur += _curr_val_eur
         if _inv_val:
             _total_invested += _inv_val
 
     for _r in _rows:
-        _r["weight"] = _r["curr_val"] / _total_current if _total_current > 0 else 0.0
+        # Gewicht auf EUR-Basis (investiert), fallback auf curr_val_eur
+        _base = _total_invested if _total_invested > 0 else _total_curr_eur
+        _r["weight"] = (_r["inv_val"] or _r["curr_val_eur"]) / _base if _base > 0 else 0.0
 
-    _total_pnl     = (_total_current - _total_invested) if _total_invested > 0 else None
+    _total_pnl     = (_total_curr_eur - _total_invested) if _total_invested > 0 else None
     _total_pnl_pct = (_total_pnl / _total_invested) if (_total_invested and _total_invested > 0) else None
-    _total_div     = sum(_r["div_ann"] for _r in _rows)
+    _total_div_eur = sum(_r["div_ann_eur"] for _r in _rows)
 
     # ── Portfolio-Übersicht Metriken ──────────────────────────────────────────
     st.markdown("---")
     st.markdown("### 📊 Portfolio-Übersicht")
+    st.caption("💱 P&L und Depotwert in **EUR (näherungsweise)** via Fixkurse. "
+               "Kaufpreise exakt in EUR (Broker-Basis) · Live-Kurse in Fremdwährung · "
+               "USD/EUR ≈ 0.917 · JPY/EUR ≈ 0.0062 · CHF/EUR ≈ 1.064")
 
     _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
-    _mc1.metric("Positionen",          str(len(_rows)))
-    _mc2.metric("Investiert",          ("$" + "{:,.0f}".format(_total_invested)) if _total_invested > 0 else "N/V")
-    _mc3.metric("Aktueller Wert",      "$" + "{:,.0f}".format(_total_current))
+    _mc1.metric("Positionen",           str(len(_rows)))
+    _mc2.metric("Investiert (€, exakt)", "€" + "{:,.0f}".format(_total_invested) if _total_invested > 0 else "N/V")
+    _mc3.metric("Akt. Wert (€, ~FX)",   "€" + "{:,.0f}".format(_total_curr_eur))
     if _total_pnl is not None:
         _delta_str = "{:+.1%}".format(_total_pnl_pct) if _total_pnl_pct is not None else None
-        _mc4.metric("Unreal. P&L",     "${:+,.0f}".format(_total_pnl), delta=_delta_str)
+        _mc4.metric("Unreal. P&L (~€)",  "€{:+,.0f}".format(_total_pnl), delta=_delta_str)
     else:
-        _mc4.metric("Unreal. P&L",     "N/V", help="Kaufpreise eingeben")
-    _mc5.metric("Jährl. Dividende",    "$" + "{:,.0f}".format(_total_div))
+        _mc4.metric("Unreal. P&L (~€)",  "N/V", help="Kaufpreise eingeben")
+    _mc5.metric("Jährl. Div. (~€)",      "€" + "{:,.0f}".format(_total_div_eur))
 
     # ── Positions-Tabelle ─────────────────────────────────────────────────────
     st.markdown("#### Positionen")
@@ -7649,9 +7701,9 @@ def _render_depot():
         _sym = _r["sym"]
         _pnl_disp = "—"
         _pnl_col  = "#8b949e"
-        if _r["pnl"] is not None:
-            _pnl_disp = "{:+,.0f} ({:+.1%})".format(_r["pnl"], _r["pnl_pct"])
-            _pnl_col  = "#3fb950" if _r["pnl"] >= 0 else "#da3633"
+        if _r["pnl_eur"] is not None:
+            _pnl_disp = "~€{:+,.0f} ({:+.1%})".format(_r["pnl_eur"], _r["pnl_pct"])
+            _pnl_col  = "#3fb950" if _r["pnl_eur"] >= 0 else "#da3633"
         _nm = _r["name"]
         if len(_nm) > 22:
             _nm = _nm[:21] + "…"
@@ -7661,16 +7713,16 @@ def _render_depot():
         _tbl.append({
             "Ticker":    _r["ticker"],
             "Name":      _nm,
-            "Anteile":   "{:.4f}".format(_r["shares"]).rstrip("0").rstrip("."),
+            "Stück":     "{:.4f}".format(_r["shares"]).rstrip("0").rstrip("."),
             "Kurs":      _sym + "{:.2f}".format(_r["price"]),
-            "Kaufkurs":  (_sym + "{:.2f}".format(_r["cost_basis"])) if _r["cost_basis"] > 0 else "—",
-            "Wert":      _sym + "{:,.0f}".format(_r["curr_val"]),
+            "Ø EK (€)":  "€{:.2f}".format(_r["cost_basis"]) if _r["cost_basis"] > 0 else "—",
+            "Wert (nat.)": _sym + "{:,.0f}".format(_r["curr_val_nat"]),
+            "Wert (~€)": "~€{:,.0f}".format(_r["curr_val_eur"]),
             "Gewicht":   "{:.1%}".format(_r["weight"]),
-            "P&L":       (_pnl_disp, _pnl_col),
-            "Div/Jahr":  (_sym + "{:,.0f}".format(_r["div_ann"])) if _r["div_ann"] > 0 else "—",
-            "Klasse":    _r["asset_class"],
-            "Sektor":    _sec_short,
+            "P&L (~€)":  (_pnl_disp, _pnl_col),
+            "Div/Jahr":  ("~€{:,.0f}".format(_r["div_ann_eur"])) if _r["div_ann_eur"] > 0.5 else "—",
             "Region":    _r["region"],
+            "Sektor":    _sec_short,
         })
     st.markdown(_html_table(pd.DataFrame(_tbl)), unsafe_allow_html=True)
 
@@ -7699,10 +7751,12 @@ def _render_depot():
     ]
 
     def _agg_by(key):
+        # Aggregation auf EUR-Basis: bevorzuge exakten inv_val (Kaufpreis), sonst approx curr_val_eur
         _agg = {}
         for _r in _rows:
             _k = _r.get(key) or "Unbekannt"
-            _agg[_k] = _agg.get(_k, 0.0) + _r["curr_val"]
+            _v = _r["inv_val"] if _r["inv_val"] else _r["curr_val_eur"]
+            _agg[_k] = _agg.get(_k, 0.0) + _v
         return list(_agg.keys()), list(_agg.values())
 
     def _depot_donut(labels, values, title):
@@ -7747,10 +7801,11 @@ def _render_depot():
 
     # ── PERFORMANCE CHART ─────────────────────────────────────────────────────
     st.markdown("### 📈 Performance")
+    st.caption("~EUR-approximiert via Fixkurse · Kaufpreis exakt in EUR · Aktueller Wert umgerechnet")
 
     _perf_rows = [_r for _r in _rows if _r["pnl_pct"] is not None]
     if _perf_rows:
-        _perf_sorted = sorted(_perf_rows, key=lambda x: x["pnl_pct"], reverse=True)
+        _perf_sorted  = sorted(_perf_rows, key=lambda x: x["pnl_pct"], reverse=True)
         _perf_tickers = [_r["ticker"] for _r in _perf_sorted]
         _perf_pcts    = [(_r["pnl_pct"] or 0) * 100 for _r in _perf_sorted]
         _perf_colors  = ["#3fb950" if v >= 0 else "#da3633" for v in _perf_pcts]
@@ -7764,13 +7819,14 @@ def _render_depot():
         ))
         _fig_perf.add_hline(y=0, line_color="#30363d", line_width=1)
         _fig_perf.update_layout(
-            title="Unrealisierte Rendite pro Position (%)",
+            title="Unrealisierte Rendite pro Position (% · ~EUR-approximiert)",
             paper_bgcolor="#0d1117", plot_bgcolor="#161b22",
             font=dict(color="#e6edf3"),
             yaxis=dict(gridcolor="#21262d", ticksuffix="%", title="Rendite"),
             xaxis=dict(gridcolor="#21262d"),
-            margin=dict(t=40, b=30, l=50, r=20),
-            height=320,
+            margin=dict(t=40, b=50, l=50, r=20),
+            height=380,
+            xaxis_tickangle=-45,
         )
         st.plotly_chart(_fig_perf, use_container_width=True)
     else:
@@ -7781,59 +7837,60 @@ def _render_depot():
     # ── DIVIDENDEN DASHBOARD ──────────────────────────────────────────────────
     st.markdown("### 💰 Dividenden")
 
-    _div_rows = [_r for _r in _rows if _r["div_ann"] > 0]
+    _div_rows = [_r for _r in _rows if _r["div_ann_eur"] > 0.5]
     if _div_rows:
         _dc1, _dc2, _dc3 = st.columns(3)
-        _dc1.metric("Jährl. Dividende (gesamt)",  "$" + "{:,.0f}".format(_total_div))
-        _dc2.metric("Monatl. Dividende (⌀)",      "$" + "{:,.0f}".format(_total_div / 12))
+        _dc1.metric("Jährl. Dividende (~€)",   "~€" + "{:,.0f}".format(_total_div_eur))
+        _dc2.metric("Monatl. Dividende (~€)",   "~€" + "{:,.0f}".format(_total_div_eur / 12))
         _dc3.metric("Depot-Dividendenrendite",
-                    "{:.2%}".format(_total_div / _total_current) if _total_current > 0 else "N/V")
+                    "{:.2%}".format(_total_div_eur / _total_invested) if _total_invested > 0 else "N/V")
 
         _div_tbl = []
         for _r in _div_rows:
             _sym = _r["sym"]
             _nm  = _r["name"][:22] + "…" if len(_r["name"]) > 22 else _r["name"]
             _div_tbl.append({
-                "Ticker":          _r["ticker"],
-                "Name":            _nm,
-                "Anteile":         "{:.4f}".format(_r["shares"]).rstrip("0").rstrip("."),
-                "Div/Anteil (j.)": _sym + "{:.2f}".format(_r["div_rate"]),
-                "Div gesamt (j.)": _sym + "{:,.0f}".format(_r["div_ann"]),
-                "Div gesamt (m.)": _sym + "{:,.0f}".format(_r["div_ann"] / 12),
-                "Div-Rendite":     "{:.2%}".format(_r["div_yield"]) if _r["div_yield"] else "—",
-                "Anteil an Div":   "{:.1%}".format(_r["div_ann"] / _total_div) if _total_div > 0 else "—",
+                "Ticker":            _r["ticker"],
+                "Name":              _nm,
+                "Stück":             "{:.4f}".format(_r["shares"]).rstrip("0").rstrip("."),
+                "Div/Anteil (nat.)": _sym + "{:.2f}".format(_r["div_rate"]),
+                "Div/Jahr (~€)":     "~€{:,.0f}".format(_r["div_ann_eur"]),
+                "Div/Monat (~€)":    "~€{:,.0f}".format(_r["div_ann_eur"] / 12),
+                "Div-Rendite":       "{:.2%}".format(_r["div_yield"]) if _r["div_yield"] else "—",
+                "Anteil":            "{:.1%}".format(_r["div_ann_eur"] / _total_div_eur) if _total_div_eur > 0 else "—",
             })
         st.markdown(_html_table(pd.DataFrame(_div_tbl)), unsafe_allow_html=True)
 
         # Monatlicher Dividenden-Balkendiagramm (gleichmäßig verteilt)
         _months = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
                    "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
-        _monthly = [_total_div / 12] * 12
+        _monthly = [_total_div_eur / 12] * 12
         _fig_div = go.Figure(go.Bar(
             x=_months, y=_monthly,
             marker_color="#3fb950",
-            text=["$" + "{:,.0f}".format(v) for v in _monthly],
+            text=["€{:,.0f}".format(v) for v in _monthly],
             textposition="outside",
-            hovertemplate="%{x}: $%{y:,.0f}<extra></extra>",
+            hovertemplate="%{x}: ~€%{y:,.0f}<extra></extra>",
         ))
         _fig_div.update_layout(
-            title="Monatliche Dividende — Gleichmäßige Schätzung (ohne Ex-Div-Kalender)",
+            title="Monatliche Dividende (~EUR) — Gleichmäßige Schätzung",
             paper_bgcolor="#0d1117", plot_bgcolor="#161b22",
             font=dict(color="#e6edf3"),
-            yaxis=dict(gridcolor="#21262d", title="Dividende ($)"),
+            yaxis=dict(gridcolor="#21262d", title="Dividende (~€)"),
             xaxis=dict(gridcolor="#21262d"),
             margin=dict(t=40, b=30, l=60, r=20),
             height=300,
         )
         st.plotly_chart(_fig_div, use_container_width=True)
-        st.caption("ℹ️ Monatliche Verteilung ist eine Gleichverteilungs-Schätzung. "
-                   "Tatsächliche Ausschüttungen hängen von Ex-Dividenden-Terminen und Ausschüttungsfrequenz ab.")
+        st.caption("ℹ️ Dividenden ~EUR-approximiert (Fixkurse). "
+                   "Monatliche Verteilung gleichmäßig geschätzt — tatsächliche Ausschüttungen "
+                   "abhängig von Ex-Div-Terminen und Ausschüttungsfrequenz.")
 
         # Per-Ticker Dividenden Donut
         _div_lbl = [_r["ticker"] for _r in _div_rows]
-        _div_val = [_r["div_ann"] for _r in _div_rows]
+        _div_val = [_r["div_ann_eur"] for _r in _div_rows]
         if len(_div_lbl) > 1:
-            st.plotly_chart(_depot_donut(_div_lbl, _div_val, "Dividenden-Verteilung nach Position"),
+            st.plotly_chart(_depot_donut(_div_lbl, _div_val, "Dividenden-Verteilung nach Position (~€)"),
                             use_container_width=True)
     else:
         st.info("ℹ️ Keine Dividenden-Positionen im Depot oder Dividenden-Daten nicht verfügbar.")
@@ -7842,19 +7899,21 @@ def _render_depot():
 
     # ── DEPOT-ZUSAMMENFASSUNG ─────────────────────────────────────────────────
     st.markdown("### 📋 Depot-Zusammenfassung")
+    _biggest = max(_rows, key=lambda x: x["inv_val"] or x["curr_val_eur"])
     _sum_data = [
-        ("Positionen gesamt",      str(len(_rows))),
-        ("Anlageklassen",          str(len(set(_r["asset_class"] for _r in _rows)))),
-        ("Sektoren",               str(len(set(_r["sector"] for _r in _rows)))),
-        ("Länder / Regionen",      str(len(set(_r["region"] for _r in _rows)))),
-        ("Währungen",              ", ".join(sorted(set(_r["currency"] for _r in _rows)))),
-        ("Investiertes Kapital",   ("$" + "{:,.0f}".format(_total_invested)) if _total_invested > 0 else "N/V"),
-        ("Aktueller Depotwert",    "$" + "{:,.0f}".format(_total_current)),
-        ("Unreal. P&L gesamt",     ("${:+,.0f} ({:+.1%})".format(_total_pnl, _total_pnl_pct)) if _total_pnl is not None else "N/V"),
-        ("Jährl. Dividende",       "$" + "{:,.0f}".format(_total_div)),
-        ("Monatl. Dividende (⌀)",  "$" + "{:,.0f}".format(_total_div / 12)),
-        ("Depot-Dividendenrendite",("{:.2%}".format(_total_div / _total_current)) if _total_current > 0 else "N/V"),
-        ("Größte Position",        max(_rows, key=lambda x: x["curr_val"])["ticker"] + " ({:.1%})".format(max(_rows, key=lambda x: x["curr_val"])["weight"])),
+        ("Positionen gesamt",        str(len(_rows))),
+        ("Anlageklassen",            str(len(set(_r["asset_class"] for _r in _rows)))),
+        ("Sektoren",                 str(len(set(_r["sector"] for _r in _rows)))),
+        ("Länder / Regionen",        str(len(set(_r["region"] for _r in _rows)))),
+        ("Währungen",                ", ".join(sorted(set(_r["currency"] for _r in _rows)))),
+        ("Eingesetztes Kapital (€)", "€{:,.0f}".format(_total_invested) if _total_invested > 0 else "N/V"),
+        ("Aktueller Depotwert (~€)", "~€{:,.0f}".format(_total_curr_eur)),
+        ("Unreal. P&L (~€)",         ("~€{:+,.0f} ({:+.1%})".format(_total_pnl, _total_pnl_pct)) if _total_pnl is not None else "N/V"),
+        ("Jährl. Dividende (~€)",    "~€{:,.0f}".format(_total_div_eur)),
+        ("Monatl. Dividende (~€)",   "~€{:,.0f}".format(_total_div_eur / 12)),
+        ("Depot-Dividendenrendite",  "{:.2%}".format(_total_div_eur / _total_invested) if _total_invested > 0 else "N/V"),
+        ("Größte Position (nach EK)", _biggest["ticker"] + " ({:.1%})".format(_biggest["weight"])),
+        ("FX-Näherung",              "USD/EUR 0.917 · JPY/EUR 0.0062 · CHF/EUR 1.064"),
     ]
     _df_sum = pd.DataFrame(_sum_data, columns=["Kennzahl", "Wert"])
     st.markdown(_html_table(_df_sum), unsafe_allow_html=True)
