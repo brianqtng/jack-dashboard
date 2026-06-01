@@ -523,6 +523,38 @@ def fetch(symbol: str) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
+# ── Depot: leichtgewichtiger Ticker-Abruf ────────────────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_depot_ticker(symbol: str) -> dict:
+    """Leichtgewichtiger yfinance-Abruf für Depot-Positionen (Kurs, Sektor, Dividende)."""
+    try:
+        t    = yf.Ticker(symbol)
+        info = t.info or {}
+        price = (info.get("currentPrice") or info.get("regularMarketPrice")
+                 or info.get("previousClose") or 0)
+        return {
+            "price":        float(price),
+            "name":         info.get("shortName") or info.get("longName") or symbol,
+            "sector":       info.get("sector") or "Unbekannt",
+            "industry":     info.get("industry") or "Unbekannt",
+            "country":      info.get("country") or "Unbekannt",
+            "currency":     info.get("currency") or "USD",
+            "div_yield":    float(info.get("dividendYield") or 0),
+            "div_rate":     float(info.get("dividendRate") or 0),
+            "week52_high":  info.get("fiftyTwoWeekHigh"),
+            "week52_low":   info.get("fiftyTwoWeekLow"),
+            "mktcap":       info.get("marketCap"),
+        }
+    except Exception as exc:
+        return {
+            "price": 0.0, "name": symbol, "sector": "Fehler",
+            "industry": "Fehler", "country": "Unbekannt", "currency": "USD",
+            "div_yield": 0.0, "div_rate": 0.0,
+            "week52_high": None, "week52_low": None, "mktcap": None,
+            "error": str(exc),
+        }
+
+
 # ── Metric calculation ─────────────────────────────────────────────────────────
 def calc_metrics(raw: dict) -> dict:  # noqa: C901
     info  = raw.get("info", {})
@@ -7479,6 +7511,355 @@ def _render_battle(ta: str, ma: dict, ja: dict, tb: str, mb: dict, jb: dict):
     st.caption("BATTLE-SCORE: Reaper (40%) + K-met/basis (30%) + Moat (20%) − Rote Flags (5%/Flag)")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 💼 DEPOT DASHBOARD — Portfolio · Allokation · Performance · Dividenden
+# ══════════════════════════════════════════════════════════════════════════════
+def _render_depot():
+    """MODUS G: Depot Dashboard — Portfolio, Allokation, Dividenden, Performance."""
+
+    st.markdown("## 💼 DEPOT DASHBOARD")
+    st.caption("Positionen werden lokal in der Browser-Session gespeichert und sind nach einem Reload zurückgesetzt.")
+
+    # ── Session-State Init ────────────────────────────────────────────────────
+    if "depot_positions" not in st.session_state:
+        st.session_state.depot_positions = []
+
+    # ── Position hinzufügen ───────────────────────────────────────────────────
+    _no_pos = len(st.session_state.depot_positions) == 0
+    with st.expander("➕ Position hinzufügen / bearbeiten", expanded=_no_pos):
+        fa, fb, fc, fd = st.columns([2, 1, 1, 1])
+        _in_ticker = fa.text_input("Ticker", placeholder="AAPL · SAP.DE · IWDA.AS", key="dp_ticker").strip().upper()
+        _in_shares = fb.number_input("Anteile", min_value=0.001, value=1.0, step=1.0, format="%.4f", key="dp_shares")
+        _in_cost   = fc.number_input("Kaufpreis / Stück", min_value=0.0, value=0.0, step=0.01, format="%.2f", key="dp_cost")
+        _in_date   = fd.date_input("Kaufdatum", key="dp_date")
+
+        fe, ff, fg = st.columns([2, 2, 1])
+        _in_class  = fe.selectbox("Anlageklasse", ["Aktie", "ETF", "REIT", "Anleihe", "Rohstoff", "Krypto", "Sonstiges"], key="dp_class")
+        _in_region = ff.text_input("Region (optional, sonst auto)", placeholder="z.B. USA · Europa · Asien", key="dp_region")
+
+        if fg.button("✅ Hinzufügen", type="primary", use_container_width=True, key="dp_add"):
+            if _in_ticker:
+                _new = {
+                    "ticker":          _in_ticker,
+                    "shares":          float(_in_shares),
+                    "cost_basis":      float(_in_cost),
+                    "purchase_date":   str(_in_date),
+                    "asset_class":     _in_class,
+                    "region_override": _in_region.strip(),
+                }
+                _existing = [p for p in st.session_state.depot_positions if p["ticker"] == _in_ticker]
+                if _existing:
+                    _e = _existing[0]
+                    _total_sh = _e["shares"] + float(_in_shares)
+                    if _e["cost_basis"] > 0 and float(_in_cost) > 0:
+                        _e["cost_basis"] = round(
+                            (_e["shares"] * _e["cost_basis"] + float(_in_shares) * float(_in_cost)) / _total_sh, 4
+                        )
+                    _e["shares"] = _total_sh
+                    st.success("✅ " + _in_ticker + ": Position aufgestockt (" + str(round(_total_sh, 4)) + " Anteile)")
+                else:
+                    st.session_state.depot_positions.append(_new)
+                    st.success("✅ " + _in_ticker + " zum Depot hinzugefügt.")
+                st.rerun()
+            else:
+                st.warning("⚠️ Bitte Ticker eingeben.")
+
+    _positions = st.session_state.depot_positions
+
+    if not _positions:
+        st.info("📭 Noch keine Positionen. Füge deine erste Position oben hinzu.")
+        return
+
+    # ── Live-Daten für alle Positionen ────────────────────────────────────────
+    with st.spinner("Lade aktuelle Kursdaten..."):
+        _live = {p["ticker"]: _fetch_depot_ticker(p["ticker"]) for p in _positions}
+
+    # ── Berechnungen ──────────────────────────────────────────────────────────
+    _rows          = []
+    _total_invested = 0.0
+    _total_current  = 0.0
+
+    for _p in _positions:
+        _d         = _live.get(_p["ticker"], {})
+        _price     = _d.get("price") or 0.0
+        _shares    = _p["shares"]
+        _cost      = _p["cost_basis"]
+        _curr_val  = _price * _shares
+        _inv_val   = (_cost * _shares) if _cost > 0 else None
+        _pnl       = (_curr_val - _inv_val) if _inv_val else None
+        _pnl_pct   = (_pnl / _inv_val) if (_inv_val and _inv_val > 0) else None
+        _currency  = _d.get("currency", "USD")
+        _sym_c     = "€" if _currency == "EUR" else ("£" if _currency == "GBP" else ("¥" if _currency in ("JPY", "CNY") else "$"))
+        _region    = _p.get("region_override") or _d.get("country") or "Unbekannt"
+        _div_ann   = (_d.get("div_rate") or 0.0) * _shares
+
+        _rows.append({
+            "ticker":      _p["ticker"],
+            "name":        _d.get("name", _p["ticker"]),
+            "shares":      _shares,
+            "currency":    _currency,
+            "sym":         _sym_c,
+            "price":       _price,
+            "cost_basis":  _cost,
+            "curr_val":    _curr_val,
+            "inv_val":     _inv_val,
+            "pnl":         _pnl,
+            "pnl_pct":     _pnl_pct,
+            "sector":      _d.get("sector") or "Unbekannt",
+            "industry":    _d.get("industry") or "Unbekannt",
+            "country":     _d.get("country") or "Unbekannt",
+            "region":      _region,
+            "asset_class": _p.get("asset_class", "Aktie"),
+            "div_yield":   _d.get("div_yield") or 0.0,
+            "div_rate":    _d.get("div_rate") or 0.0,
+            "div_ann":     _div_ann,
+            "week52_high": _d.get("week52_high"),
+            "week52_low":  _d.get("week52_low"),
+        })
+        _total_current += _curr_val
+        if _inv_val:
+            _total_invested += _inv_val
+
+    for _r in _rows:
+        _r["weight"] = _r["curr_val"] / _total_current if _total_current > 0 else 0.0
+
+    _total_pnl     = (_total_current - _total_invested) if _total_invested > 0 else None
+    _total_pnl_pct = (_total_pnl / _total_invested) if (_total_invested and _total_invested > 0) else None
+    _total_div     = sum(_r["div_ann"] for _r in _rows)
+
+    # ── Portfolio-Übersicht Metriken ──────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📊 Portfolio-Übersicht")
+
+    _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
+    _mc1.metric("Positionen",          str(len(_rows)))
+    _mc2.metric("Investiert",          ("$" + "{:,.0f}".format(_total_invested)) if _total_invested > 0 else "N/V")
+    _mc3.metric("Aktueller Wert",      "$" + "{:,.0f}".format(_total_current))
+    if _total_pnl is not None:
+        _delta_str = "{:+.1%}".format(_total_pnl_pct) if _total_pnl_pct is not None else None
+        _mc4.metric("Unreal. P&L",     "${:+,.0f}".format(_total_pnl), delta=_delta_str)
+    else:
+        _mc4.metric("Unreal. P&L",     "N/V", help="Kaufpreise eingeben")
+    _mc5.metric("Jährl. Dividende",    "$" + "{:,.0f}".format(_total_div))
+
+    # ── Positions-Tabelle ─────────────────────────────────────────────────────
+    st.markdown("#### Positionen")
+    _tbl = []
+    for _r in _rows:
+        _sym = _r["sym"]
+        _pnl_disp = "—"
+        _pnl_col  = "#8b949e"
+        if _r["pnl"] is not None:
+            _pnl_disp = "{:+,.0f} ({:+.1%})".format(_r["pnl"], _r["pnl_pct"])
+            _pnl_col  = "#3fb950" if _r["pnl"] >= 0 else "#da3633"
+        _nm = _r["name"]
+        if len(_nm) > 22:
+            _nm = _nm[:21] + "…"
+        _sec_short = _r["sector"]
+        if len(_sec_short) > 16:
+            _sec_short = _sec_short[:15] + "…"
+        _tbl.append({
+            "Ticker":    _r["ticker"],
+            "Name":      _nm,
+            "Anteile":   "{:.4f}".format(_r["shares"]).rstrip("0").rstrip("."),
+            "Kurs":      _sym + "{:.2f}".format(_r["price"]),
+            "Kaufkurs":  (_sym + "{:.2f}".format(_r["cost_basis"])) if _r["cost_basis"] > 0 else "—",
+            "Wert":      _sym + "{:,.0f}".format(_r["curr_val"]),
+            "Gewicht":   "{:.1%}".format(_r["weight"]),
+            "P&L":       (_pnl_disp, _pnl_col),
+            "Div/Jahr":  (_sym + "{:,.0f}".format(_r["div_ann"])) if _r["div_ann"] > 0 else "—",
+            "Klasse":    _r["asset_class"],
+            "Sektor":    _sec_short,
+            "Region":    _r["region"],
+        })
+    st.markdown(_html_table(pd.DataFrame(_tbl)), unsafe_allow_html=True)
+
+    # ── Position löschen ──────────────────────────────────────────────────────
+    with st.expander("🗑️ Position entfernen"):
+        _tickers_list = [p["ticker"] for p in _positions]
+        _del_tick = st.selectbox("Position wählen", _tickers_list, key="dp_del_sel")
+        _col_del, _col_clear, _ = st.columns([1, 1, 3])
+        if _col_del.button("❌ Entfernen", key="dp_del_btn"):
+            st.session_state.depot_positions = [p for p in _positions if p["ticker"] != _del_tick]
+            st.success(_del_tick + " entfernt.")
+            st.rerun()
+        if _col_clear.button("🗑️ Depot leeren", key="dp_clear_btn"):
+            st.session_state.depot_positions = []
+            st.rerun()
+
+    st.markdown("---")
+
+    # ── ALLOKATIONS-CHARTS ────────────────────────────────────────────────────
+    st.markdown("### 🥧 Allokationen")
+
+    _PIE_COLORS = [
+        "#388bfd", "#3fb950", "#e3b341", "#d29922", "#da3633",
+        "#79c0ff", "#a5d6ff", "#56d364", "#ffa657", "#ff7b72",
+        "#d2a8ff", "#f778ba", "#58a6ff", "#2ea043",
+    ]
+
+    def _agg_by(key):
+        _agg = {}
+        for _r in _rows:
+            _k = _r.get(key) or "Unbekannt"
+            _agg[_k] = _agg.get(_k, 0.0) + _r["curr_val"]
+        return list(_agg.keys()), list(_agg.values())
+
+    def _depot_donut(labels, values, title):
+        _fig = go.Figure(go.Pie(
+            labels=labels, values=values, hole=0.52,
+            textinfo="percent+label", textfont_size=11,
+            marker=dict(colors=_PIE_COLORS[:len(labels)],
+                        line=dict(color="#0d1117", width=2)),
+            hovertemplate="%{label}: $%{value:,.0f} · %{percent}<extra></extra>",
+        ))
+        _fig.update_layout(
+            title=dict(text=title, font=dict(color="#e6edf3", size=13)),
+            paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+            font=dict(color="#e6edf3"),
+            legend=dict(font=dict(color="#8b949e", size=10), bgcolor="#161b22",
+                        orientation="v", x=1.02, y=0.5),
+            margin=dict(t=40, b=20, l=20, r=120),
+            height=300,
+        )
+        return _fig
+
+    _all_c1, _all_c2 = st.columns(2)
+    _all_c3, _all_c4 = st.columns(2)
+
+    _s_lbl, _s_val = _agg_by("sector")
+    _all_c1.plotly_chart(_depot_donut(_s_lbl, _s_val, "Sektoren"), use_container_width=True)
+
+    _r_lbl, _r_val = _agg_by("region")
+    _all_c2.plotly_chart(_depot_donut(_r_lbl, _r_val, "Regionen / Länder"), use_container_width=True)
+
+    _cu_lbl, _cu_val = _agg_by("currency")
+    _all_c3.plotly_chart(_depot_donut(_cu_lbl, _cu_val, "Währungen"), use_container_width=True)
+
+    _ac_lbl, _ac_val = _agg_by("asset_class")
+    _all_c4.plotly_chart(_depot_donut(_ac_lbl, _ac_val, "Anlageklassen"), use_container_width=True)
+
+    _ind_lbl, _ind_val = _agg_by("industry")
+    if len(_ind_lbl) > 1:
+        st.plotly_chart(_depot_donut(_ind_lbl, _ind_val, "Branchen"), use_container_width=True)
+
+    st.markdown("---")
+
+    # ── PERFORMANCE CHART ─────────────────────────────────────────────────────
+    st.markdown("### 📈 Performance")
+
+    _perf_rows = [_r for _r in _rows if _r["pnl_pct"] is not None]
+    if _perf_rows:
+        _perf_sorted = sorted(_perf_rows, key=lambda x: x["pnl_pct"], reverse=True)
+        _perf_tickers = [_r["ticker"] for _r in _perf_sorted]
+        _perf_pcts    = [(_r["pnl_pct"] or 0) * 100 for _r in _perf_sorted]
+        _perf_colors  = ["#3fb950" if v >= 0 else "#da3633" for v in _perf_pcts]
+        _perf_texts   = ["{:+.1f}%".format(v) for v in _perf_pcts]
+
+        _fig_perf = go.Figure(go.Bar(
+            x=_perf_tickers, y=_perf_pcts,
+            marker_color=_perf_colors,
+            text=_perf_texts, textposition="outside",
+            hovertemplate="%{x}: %{y:+.2f}%<extra></extra>",
+        ))
+        _fig_perf.add_hline(y=0, line_color="#30363d", line_width=1)
+        _fig_perf.update_layout(
+            title="Unrealisierte Rendite pro Position (%)",
+            paper_bgcolor="#0d1117", plot_bgcolor="#161b22",
+            font=dict(color="#e6edf3"),
+            yaxis=dict(gridcolor="#21262d", ticksuffix="%", title="Rendite"),
+            xaxis=dict(gridcolor="#21262d"),
+            margin=dict(t=40, b=30, l=50, r=20),
+            height=320,
+        )
+        st.plotly_chart(_fig_perf, use_container_width=True)
+    else:
+        st.info("ℹ️ Kaufpreise für alle Positionen eingeben, um die Performance zu sehen.")
+
+    st.markdown("---")
+
+    # ── DIVIDENDEN DASHBOARD ──────────────────────────────────────────────────
+    st.markdown("### 💰 Dividenden")
+
+    _div_rows = [_r for _r in _rows if _r["div_ann"] > 0]
+    if _div_rows:
+        _dc1, _dc2, _dc3 = st.columns(3)
+        _dc1.metric("Jährl. Dividende (gesamt)",  "$" + "{:,.0f}".format(_total_div))
+        _dc2.metric("Monatl. Dividende (⌀)",      "$" + "{:,.0f}".format(_total_div / 12))
+        _dc3.metric("Depot-Dividendenrendite",
+                    "{:.2%}".format(_total_div / _total_current) if _total_current > 0 else "N/V")
+
+        _div_tbl = []
+        for _r in _div_rows:
+            _sym = _r["sym"]
+            _nm  = _r["name"][:22] + "…" if len(_r["name"]) > 22 else _r["name"]
+            _div_tbl.append({
+                "Ticker":          _r["ticker"],
+                "Name":            _nm,
+                "Anteile":         "{:.4f}".format(_r["shares"]).rstrip("0").rstrip("."),
+                "Div/Anteil (j.)": _sym + "{:.2f}".format(_r["div_rate"]),
+                "Div gesamt (j.)": _sym + "{:,.0f}".format(_r["div_ann"]),
+                "Div gesamt (m.)": _sym + "{:,.0f}".format(_r["div_ann"] / 12),
+                "Div-Rendite":     "{:.2%}".format(_r["div_yield"]) if _r["div_yield"] else "—",
+                "Anteil an Div":   "{:.1%}".format(_r["div_ann"] / _total_div) if _total_div > 0 else "—",
+            })
+        st.markdown(_html_table(pd.DataFrame(_div_tbl)), unsafe_allow_html=True)
+
+        # Monatlicher Dividenden-Balkendiagramm (gleichmäßig verteilt)
+        _months = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
+                   "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+        _monthly = [_total_div / 12] * 12
+        _fig_div = go.Figure(go.Bar(
+            x=_months, y=_monthly,
+            marker_color="#3fb950",
+            text=["$" + "{:,.0f}".format(v) for v in _monthly],
+            textposition="outside",
+            hovertemplate="%{x}: $%{y:,.0f}<extra></extra>",
+        ))
+        _fig_div.update_layout(
+            title="Monatliche Dividende — Gleichmäßige Schätzung (ohne Ex-Div-Kalender)",
+            paper_bgcolor="#0d1117", plot_bgcolor="#161b22",
+            font=dict(color="#e6edf3"),
+            yaxis=dict(gridcolor="#21262d", title="Dividende ($)"),
+            xaxis=dict(gridcolor="#21262d"),
+            margin=dict(t=40, b=30, l=60, r=20),
+            height=300,
+        )
+        st.plotly_chart(_fig_div, use_container_width=True)
+        st.caption("ℹ️ Monatliche Verteilung ist eine Gleichverteilungs-Schätzung. "
+                   "Tatsächliche Ausschüttungen hängen von Ex-Dividenden-Terminen und Ausschüttungsfrequenz ab.")
+
+        # Per-Ticker Dividenden Donut
+        _div_lbl = [_r["ticker"] for _r in _div_rows]
+        _div_val = [_r["div_ann"] for _r in _div_rows]
+        if len(_div_lbl) > 1:
+            st.plotly_chart(_depot_donut(_div_lbl, _div_val, "Dividenden-Verteilung nach Position"),
+                            use_container_width=True)
+    else:
+        st.info("ℹ️ Keine Dividenden-Positionen im Depot oder Dividenden-Daten nicht verfügbar.")
+
+    st.markdown("---")
+
+    # ── DEPOT-ZUSAMMENFASSUNG ─────────────────────────────────────────────────
+    st.markdown("### 📋 Depot-Zusammenfassung")
+    _sum_data = [
+        ("Positionen gesamt",      str(len(_rows))),
+        ("Anlageklassen",          str(len(set(_r["asset_class"] for _r in _rows)))),
+        ("Sektoren",               str(len(set(_r["sector"] for _r in _rows)))),
+        ("Länder / Regionen",      str(len(set(_r["region"] for _r in _rows)))),
+        ("Währungen",              ", ".join(sorted(set(_r["currency"] for _r in _rows)))),
+        ("Investiertes Kapital",   ("$" + "{:,.0f}".format(_total_invested)) if _total_invested > 0 else "N/V"),
+        ("Aktueller Depotwert",    "$" + "{:,.0f}".format(_total_current)),
+        ("Unreal. P&L gesamt",     ("${:+,.0f} ({:+.1%})".format(_total_pnl, _total_pnl_pct)) if _total_pnl is not None else "N/V"),
+        ("Jährl. Dividende",       "$" + "{:,.0f}".format(_total_div)),
+        ("Monatl. Dividende (⌀)",  "$" + "{:,.0f}".format(_total_div / 12)),
+        ("Depot-Dividendenrendite",("{:.2%}".format(_total_div / _total_current)) if _total_current > 0 else "N/V"),
+        ("Größte Position",        max(_rows, key=lambda x: x["curr_val"])["ticker"] + " ({:.1%})".format(max(_rows, key=lambda x: x["curr_val"])["weight"])),
+    ]
+    _df_sum = pd.DataFrame(_sum_data, columns=["Kennzahl", "Wert"])
+    st.markdown(_html_table(_df_sum), unsafe_allow_html=True)
+
+
 # ── App Layout ────────────────────────────────────────────────────────────────
 hc1, hc2 = st.columns([3, 1])
 with hc1:
@@ -7496,10 +7877,11 @@ with st.sidebar:
         "🎯 F: Decision Mode",
         "📊 Earnings-Prep",
         "🌍 Makro-Radar",
+        "💼 G: Depot",
     ], label_visibility="collapsed")
     st.divider()
     st.markdown("**Legende Modi:**")
-    st.caption("A: Vollanalyse (7 Schritte)\nB: Vergleich 2 Aktien\nC: These noch intakt?\nE: BIG FIVE Kurzcheck\nF: Ultra-Short Entscheid")
+    st.caption("A: Vollanalyse (7 Schritte)\nB: Vergleich 2 Aktien\nC: These noch intakt?\nE: BIG FIVE Kurzcheck\nF: Ultra-Short Entscheid\nG: Depot Dashboard")
     st.divider()
     st.caption(f"Daten: Yahoo Finance\nKein API Key nötig\nCache: 1h\nStand: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
 
@@ -7508,6 +7890,10 @@ st.markdown("---")
 # ── Makro-Radar (kein Ticker nötig) ──────────────────────────────────────────
 if "Makro" in modus:
     _render_makro_radar()
+
+# ── Depot Dashboard (G) ───────────────────────────────────────────────────────
+elif "Depot" in modus:
+    _render_depot()
 
 # ── Battle Mode (B) ───────────────────────────────────────────────────────────
 elif "Battle" in modus:
