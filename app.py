@@ -530,20 +530,23 @@ def _fetch_depot_ticker(symbol: str) -> dict:
     try:
         t    = yf.Ticker(symbol)
         info = t.info or {}
-        price = (info.get("currentPrice") or info.get("regularMarketPrice")
-                 or info.get("previousClose") or 0)
+        price = float(info.get("currentPrice") or info.get("regularMarketPrice")
+                      or info.get("previousClose") or 0)
+        _prev = float(info.get("previousClose") or price or 0)
+        _day_chg = (price - _prev) / _prev if _prev and _prev > 0 and price != _prev else 0.0
         return {
-            "price":        float(price),
-            "name":         info.get("shortName") or info.get("longName") or symbol,
-            "sector":       info.get("sector") or "Unbekannt",
-            "industry":     info.get("industry") or "Unbekannt",
-            "country":      info.get("country") or "Unbekannt",
-            "currency":     info.get("currency") or "USD",
-            "div_yield":    float(info.get("dividendYield") or 0),
-            "div_rate":     float(info.get("dividendRate") or 0),
-            "week52_high":  info.get("fiftyTwoWeekHigh"),
-            "week52_low":   info.get("fiftyTwoWeekLow"),
-            "mktcap":       info.get("marketCap"),
+            "price":           price,
+            "name":            info.get("shortName") or info.get("longName") or symbol,
+            "sector":          info.get("sector") or "Unbekannt",
+            "industry":        info.get("industry") or "Unbekannt",
+            "country":         info.get("country") or "Unbekannt",
+            "currency":        info.get("currency") or "USD",
+            "div_yield":       float(info.get("dividendYield") or 0),
+            "div_rate":        float(info.get("dividendRate") or 0),
+            "week52_high":     info.get("fiftyTwoWeekHigh"),
+            "week52_low":      info.get("fiftyTwoWeekLow"),
+            "mktcap":          info.get("marketCap"),
+            "day_change_pct":  _day_chg,
         }
     except Exception as exc:
         return {
@@ -551,7 +554,7 @@ def _fetch_depot_ticker(symbol: str) -> dict:
             "industry": "", "country": "", "currency": "USD",
             "div_yield": 0.0, "div_rate": 0.0,
             "week52_high": None, "week52_low": None, "mktcap": None,
-            "error": str(exc),
+            "day_change_pct": 0.0, "error": str(exc),
         }
 
 
@@ -7916,55 +7919,236 @@ def _render_depot():
     _total_pnl_pct = (_total_pnl / _total_invested) if (_total_invested and _total_invested > 0) else None
     _total_div_eur = sum(_r["div_ann_eur"] for _r in _rows)
 
-    # ── Portfolio-Übersicht Metriken ──────────────────────────────────────────
+    # ── Portfolio Performance Hero + Positions ────────────────────────────────
     st.markdown("---")
-    st.markdown("### 📊 Portfolio-Übersicht")
-    st.caption("💱 P&L und Depotwert in **EUR (näherungsweise)** via Fixkurse. "
-               "Kaufpreise exakt in EUR (Broker-Basis) · Live-Kurse in Fremdwährung · "
-               "USD/EUR ≈ 0.917 · JPY/EUR ≈ 0.0062 · CHF/EUR ≈ 1.064")
 
-    _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
-    _mc1.metric("Positionen",           str(len(_rows)))
-    _mc2.metric("Investiert (€, exakt)", "€" + "{:,.0f}".format(_total_invested) if _total_invested > 0 else "N/V")
-    _mc3.metric("Akt. Wert (€, ~FX)",   "€" + "{:,.0f}".format(_total_curr_eur))
-    if _total_pnl is not None:
-        _delta_str = "{:+.1%}".format(_total_pnl_pct) if _total_pnl_pct is not None else None
-        _mc4.metric("Unreal. P&L (~€)",  "€{:+,.0f}".format(_total_pnl), delta=_delta_str)
-    else:
-        _mc4.metric("Unreal. P&L (~€)",  "N/V", help="Kaufpreise eingeben")
-    _mc5.metric("Jährl. Div. (~€)",      "€" + "{:,.0f}".format(_total_div_eur))
+    # Period & Sort state init
+    _DEPOT_PERIODS = ["Seit Kauf", "1T", "1W", "1M", "YTD", "1J", "Max"]
+    _DEPOT_SORTS   = ["Positionsgröße", "Rel. Rendite", "Abs. Rendite", "Tagestrend"]
+    if "depot_period" not in st.session_state:
+        st.session_state.depot_period = "Seit Kauf"
+    if "depot_sort" not in st.session_state:
+        st.session_state.depot_sort = "Positionsgröße"
 
-    # ── Positions-Tabelle ─────────────────────────────────────────────────────
-    st.markdown("#### Positionen")
-    _tbl = []
+    _dp = st.session_state.depot_period
+
+    # Compute cutoff timestamp for selected period
+    _now_ts = pd.Timestamp.now().normalize()
+    if _dp == "1T":
+        _dp_cutoff = _now_ts - pd.Timedelta(days=5)
+    elif _dp == "1W":
+        _dp_cutoff = _now_ts - pd.Timedelta(weeks=1)
+    elif _dp == "1M":
+        _dp_cutoff = _now_ts - pd.Timedelta(days=30)
+    elif _dp == "YTD":
+        _dp_cutoff = pd.Timestamp(str(_now_ts.year) + "-01-01")
+    elif _dp == "1J":
+        _dp_cutoff = _now_ts - pd.Timedelta(days=365)
+    else:  # Max / Seit Kauf → full 5y window
+        _dp_cutoff = _now_ts - pd.Timedelta(days=1826)
+
+    # Fetch historical close series for all positions (cached 1h)
+    _depot_hists = {}
+    with st.spinner("Lade Performance-Daten..."):
+        for _r in _rows:
+            _hs_tmp = _fetch_comparison_hist(_r["ticker"])
+            if not _hs_tmp.empty:
+                _depot_hists[_r["ticker"]] = _hs_tmp
+
+    # Build weighted portfolio sparkline (normalized index → multiply by invested base)
+    _wt_series = []
+    _wt_total  = 0.0
     for _r in _rows:
-        _sym = _r["sym"]
-        _pnl_disp = "—"
-        _pnl_col  = "#8b949e"
-        if _r["pnl_eur"] is not None:
-            _pnl_disp = "~€{:+,.0f} ({:+.1%})".format(_r["pnl_eur"], _r["pnl_pct"])
-            _pnl_col  = "#3fb950" if _r["pnl_eur"] >= 0 else "#da3633"
-        _nm = _r["name"]
-        if len(_nm) > 22:
-            _nm = _nm[:21] + "…"
-        _sec_short = _r["sector"]
-        if len(_sec_short) > 16:
-            _sec_short = _sec_short[:15] + "…"
-        _tbl.append({
-            "Ticker":    _r["ticker"],
-            "Name":      _nm,
-            "Stück":     "{:.4f}".format(_r["shares"]).rstrip("0").rstrip("."),
-            "Kurs":      _sym + "{:.2f}".format(_r["price"]),
-            "Ø EK (€)":  "€{:.2f}".format(_r["cost_basis"]) if _r["cost_basis"] > 0 else "—",
-            "Wert (nat.)": _sym + "{:,.0f}".format(_r["curr_val_nat"]),
-            "Wert (~€)": "~€{:,.0f}".format(_r["curr_val_eur"]),
-            "Gewicht":   "{:.1%}".format(_r["weight"]),
-            "P&L (~€)":  (_pnl_disp, _pnl_col),
-            "Div/Jahr":  ("~€{:,.0f}".format(_r["div_ann_eur"])) if _r["div_ann_eur"] > 0.5 else "—",
-            "Region":    _r["region"],
-            "Sektor":    _sec_short,
-        })
-    st.markdown(_html_table(pd.DataFrame(_tbl)), unsafe_allow_html=True)
+        _tk = _r["ticker"]
+        if _tk not in _depot_hists:
+            continue
+        _hs_full = _depot_hists[_tk]
+        _hs_cut  = _hs_full[_hs_full.index >= _dp_cutoff]
+        if len(_hs_cut) < 2:
+            continue
+        _wi = float(_r["inv_val"]) if _r["inv_val"] else float(_r["curr_val_eur"])
+        if not _wi or _wi <= 0:
+            continue
+        _wt_series.append((_hs_cut / _hs_cut.iloc[0], _wi))
+        _wt_total += _wi
+
+    _port_idx = None
+    if _wt_series and _wt_total > 0:
+        _all_dates = sorted(set().union(*[list(_s.index) for _s, _ in _wt_series]))
+        _adi = pd.DatetimeIndex(_all_dates)
+        _port_s = pd.Series(0.0, index=_adi)
+        for _ws, _ww in _wt_series:
+            _ws_ri = _ws.reindex(_adi, method="ffill").bfill().fillna(1.0)
+            _port_s = _port_s + _ws_ri * (_ww / _wt_total)
+        _port_idx = _port_s
+
+    # Hero period P&L (from sparkline or fallback to cost-basis P&L)
+    _hero_pct = None
+    _hero_abs = None
+    if _port_idx is not None and len(_port_idx) >= 2:
+        _hero_pct = float(_port_idx.iloc[-1]) - 1.0
+        _hero_abs = _hero_pct * _total_invested if _total_invested > 0 else None
+    if _hero_pct is None and _total_pnl_pct is not None:
+        _hero_pct = _total_pnl_pct
+        _hero_abs = _total_pnl
+
+    _h_col   = "#3fb950" if (_hero_pct or 0) >= 0 else "#da3633"
+    _h_arrow = "▲" if (_hero_pct or 0) >= 0 else "▼"
+    _h_pct_s = "{:+.1%}".format(_hero_pct) if _hero_pct is not None else "—"
+    _h_abs_s = "~€{:+,.0f} &nbsp;".format(_hero_abs) if _hero_abs is not None else ""
+    _val_fmt = "~€{:,.0f}".format(_total_curr_eur)
+
+    # ── Hero Card ─────────────────────────────────────────────────────────────
+    st.markdown(
+        "<div style=\"background:#161b22;border:1px solid #30363d;border-radius:14px;"
+        "padding:24px 28px 14px 28px;\">"
+        "<div style=\"color:#8b949e;font-size:13px;margin-bottom:8px;\">"
+        "💼 Mein Depot &nbsp;·&nbsp; " + str(len(_rows)) + " Positionen"
+        "</div>"
+        "<div style=\"font-size:40px;font-weight:700;color:#e6edf3;line-height:1.15;\">"
+        + _val_fmt
+        + "</div>"
+        "<div style=\"font-size:15px;font-weight:600;color:" + _h_col + ";margin-top:6px;\">"
+        + _h_arrow + " " + _h_abs_s
+        + "<span>(" + _h_pct_s + ")</span>"
+        "<span style=\"color:#8b949e;font-size:12px;font-weight:400;margin-left:10px;\">"
+        + _dp + "</span>"
+        "</div></div>",
+        unsafe_allow_html=True
+    )
+
+    # ── Sparkline Chart ────────────────────────────────────────────────────────
+    _fig_spark = go.Figure()
+    if _port_idx is not None and len(_port_idx) >= 2:
+        _base_val  = _total_invested if _total_invested > 0 else _total_curr_eur
+        _spark_y   = [float(v) * _base_val for v in _port_idx.values]
+        _spark_x   = list(_port_idx.index)
+        _spark_col = "#3fb950" if (_hero_pct or 0) >= 0 else "#da3633"
+        _fill_col  = "rgba(63,185,80,0.12)" if (_hero_pct or 0) >= 0 else "rgba(218,54,51,0.12)"
+        _fig_spark.add_trace(go.Scatter(
+            x=_spark_x, y=_spark_y, mode="lines", fill="tozeroy",
+            line=dict(color=_spark_col, width=2),
+            fillcolor=_fill_col,
+            hovertemplate="~€%{y:,.0f}<extra></extra>",
+        ))
+    _fig_spark.update_layout(
+        paper_bgcolor="#161b22", plot_bgcolor="#161b22",
+        margin=dict(t=4, b=4, l=0, r=0), height=140,
+        xaxis=dict(visible=False, showgrid=False, zeroline=False),
+        yaxis=dict(visible=False, showgrid=False, zeroline=False),
+        showlegend=False,
+    )
+    st.plotly_chart(_fig_spark, use_container_width=True)
+
+    # ── Period Selector Buttons ────────────────────────────────────────────────
+    _pc = st.columns(len(_DEPOT_PERIODS))
+    for _pi, _pl in enumerate(_DEPOT_PERIODS):
+        _is_act = (st.session_state.depot_period == _pl)
+        if _pc[_pi].button(_pl, key="dp_per_" + _pl,
+                            type="primary" if _is_act else "secondary",
+                            use_container_width=True):
+            st.session_state.depot_period = _pl
+            st.rerun()
+
+    st.markdown("---")
+    st.caption(
+        "💱 Depotwert **näherungsweise in EUR** via Fixkurse · "
+        "Kaufpreise exakt in EUR (Broker-Basis) · "
+        "USD/EUR ≈ 0.917 · JPY/EUR ≈ 0.0062 · CHF/EUR ≈ 1.064"
+    )
+
+    # ── Sort Control ───────────────────────────────────────────────────────────
+    _sort_c, _, _ = st.columns([2, 2, 3])
+    with _sort_c:
+        _sort_by = st.selectbox(
+            "Sortieren nach", _DEPOT_SORTS,
+            index=_DEPOT_SORTS.index(st.session_state.depot_sort)
+                  if st.session_state.depot_sort in _DEPOT_SORTS else 0,
+            key="dp_sort_sel",
+        )
+        if _sort_by != st.session_state.depot_sort:
+            st.session_state.depot_sort = _sort_by
+            st.rerun()
+
+    # ── Per-Position Period Return ─────────────────────────────────────────────
+    for _r in _rows:
+        _tk2 = _r["ticker"]
+        _pr  = None
+        if _dp == "Seit Kauf":
+            _pr = _r["pnl_pct"]
+        elif _dp == "1T":
+            _pr = _live.get(_tk2, {}).get("day_change_pct", 0.0)
+        else:
+            if _tk2 in _depot_hists:
+                _hd2  = _depot_hists[_tk2]
+                _hd2c = _hd2[_hd2.index >= _dp_cutoff]
+                if len(_hd2c) >= 2:
+                    _pr = float(_hd2c.iloc[-1] / _hd2c.iloc[0] - 1.0)
+        _r["period_ret"] = _pr
+
+    # ── Sort Positions ─────────────────────────────────────────────────────────
+    _ds = st.session_state.depot_sort
+    if _ds == "Rel. Rendite":
+        _rows_s = sorted(_rows, key=lambda x: (x.get("period_ret") or -999), reverse=True)
+    elif _ds == "Abs. Rendite":
+        _rows_s = sorted(_rows,
+                         key=lambda x: ((x.get("period_ret") or 0) * (x["curr_val_eur"] or 0)),
+                         reverse=True)
+    elif _ds == "Tagestrend":
+        _rows_s = sorted(_rows,
+                         key=lambda x: (_live.get(x["ticker"], {}).get("day_change_pct") or 0),
+                         reverse=True)
+    else:  # Positionsgröße
+        _rows_s = sorted(_rows, key=lambda x: (x["curr_val_eur"] or 0), reverse=True)
+
+    # ── Position Cards ─────────────────────────────────────────────────────────
+    _CCOLORS = [
+        "#388bfd", "#3fb950", "#e3b341", "#da3633", "#d2a8ff",
+        "#79c0ff", "#56d364", "#ffa657", "#ff7b72", "#f778ba",
+        "#58a6ff", "#2ea043", "#a5d6ff", "#ffb347",
+    ]
+
+    _cards_html = "<div style=\"display:flex;flex-direction:column;gap:8px;margin-top:12px;\">"
+    for _ri, _r2 in enumerate(_rows_s):
+        _pr2  = _r2.get("period_ret")
+        _pc2  = "#3fb950" if (_pr2 or 0) >= 0 else "#da3633"
+        _pa2  = "▲" if (_pr2 or 0) >= 0 else "▼"
+        _ps2  = "{:+.1%}".format(_pr2) if _pr2 is not None else "—"
+        _circ = _CCOLORS[_ri % len(_CCOLORS)]
+        _lett = _r2["ticker"][0].upper()
+        _nm2  = _r2["name"]
+        if len(_nm2) > 30:
+            _nm2 = _nm2[:29] + "…"
+        _sh2  = "{:.4f}".format(_r2["shares"]).rstrip("0").rstrip(".")
+        _vl2  = "~€{:,.0f}".format(_r2["curr_val_eur"])
+        _wt2  = "{:.1%}".format(_r2["weight"])
+        _cards_html += (
+            "<div style=\"background:#161b22;border:1px solid #30363d;border-radius:10px;"
+            "padding:12px 16px;display:flex;align-items:center;justify-content:space-between;\">"
+            # Left: circle + info
+            "<div style=\"display:flex;align-items:center;gap:12px;\">"
+            "<div style=\"width:40px;height:40px;border-radius:50%;background:" + _circ + ";"
+            "display:flex;align-items:center;justify-content:center;"
+            "font-weight:700;font-size:16px;color:#0d1117;flex-shrink:0;\">" + _lett + "</div>"
+            "<div>"
+            "<div style=\"font-weight:600;color:#e6edf3;font-size:14px;\">" + _nm2 + "</div>"
+            "<div style=\"margin-top:3px;\">"
+            "<span style=\"background:#21262d;border:1px solid #30363d;border-radius:4px;"
+            "padding:1px 6px;font-size:11px;color:#8b949e;font-family:monospace;\">"
+            + _r2["ticker"] + "</span>"
+            "&nbsp;<span style=\"color:#8b949e;font-size:12px;\">" + _sh2 + " Stück</span>"
+            "</div></div></div>"
+            # Right: value + period return + weight
+            "<div style=\"text-align:right;flex-shrink:0;\">"
+            "<div style=\"font-size:15px;font-weight:600;color:#e6edf3;\">" + _vl2 + "</div>"
+            "<div style=\"font-size:13px;font-weight:600;color:" + _pc2 + ";margin-top:2px;\">"
+            + _pa2 + " " + _ps2 + "</div>"
+            "<div style=\"font-size:11px;color:#8b949e;\">" + _wt2 + "</div>"
+            "</div></div>"
+        )
+    _cards_html += "</div>"
+    st.markdown(_cards_html, unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Position löschen ──────────────────────────────────────────────────────
     with st.expander("🗑️ Position entfernen"):
