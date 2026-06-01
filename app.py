@@ -573,6 +573,21 @@ def _fetch_benchmark_data() -> dict:
     return _out
 
 
+# ── Einzelner Vergleichs-Ticker (Schlusskurs-Historie, 5J, gecacht) ───────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_comparison_hist(ticker: str) -> pd.Series:
+    """Schlusskurs-Serie für eigene Vergleichs-Ticker (5J)."""
+    try:
+        _h = yf.Ticker(ticker.upper()).history(period="5y")
+        if not _h.empty and "Close" in _h.columns:
+            _s = _h["Close"].copy()
+            _s.index = pd.to_datetime(_s.index).tz_localize(None)
+            return _s
+    except Exception:
+        pass
+    return pd.Series(dtype=float)
+
+
 # ── Metric calculation ─────────────────────────────────────────────────────────
 def calc_metrics(raw: dict) -> dict:  # noqa: C901
     info  = raw.get("info", {})
@@ -3423,10 +3438,56 @@ _BM_LINE_COLORS = {
 
 
 def _render_benchmark_vergleich(hist_stock=None, stock_label="Aktie",
-                                 stock_color="#388bfd", bm_key=""):
-    """Relative Performance-Vergleich: Aktie/Depot vs. S&P 500, MSCI World, NASDAQ 100."""
+                                 stock_color="#388bfd", bm_key="",
+                                 available_tickers=None):
+    """Relative Performance-Vergleich: Aktie/Depot + eigene Vergleichswerte vs. Benchmarks."""
 
     st.markdown("### 📊 Benchmark-Vergleich")
+
+    # ── Vergleichswerte ────────────────────────────────────────────────────────
+    # Farben für benutzerdefinierte Linien (distinct von Benchmark-Farben)
+    _EXTRA_COLORS = ["#da3633", "#d2a8ff", "#ffa657", "#f778ba", "#56d364", "#ff7b72"]
+    _extra_series = {}   # label → pd.Series
+
+    if available_tickers:
+        # Depot-Kontext: Multiselect aus Positionen + freie Eingabe
+        _ci1, _ci2 = st.columns([3, 2])
+        _sel_labels = _ci1.multiselect(
+            "Depot-Positionen vergleichen",
+            options=[t["label"] for t in available_tickers],
+            default=[],
+            key="bm_sel_" + bm_key,
+            placeholder="Position wählen...",
+        )
+        _manual_raw = _ci2.text_input(
+            "Eigener Ticker (komma-getrennt)",
+            placeholder="z.B. NVDA, QQQ, ASML.AS",
+            key="bm_manual_" + bm_key,
+        )
+        # Aus Multiselect laden
+        for _sl in _sel_labels[:5]:
+            _tk = next((t["ticker"] for t in available_tickers if t["label"] == _sl), _sl)
+            _h = _fetch_comparison_hist(_tk)
+            if not _h.empty:
+                _extra_series[_sl] = _h
+    else:
+        # Analyse-Kontext: freie Eingabe (analysierte Aktie schon enthalten)
+        _manual_raw = st.text_input(
+            "Weitere Ticker zum Vergleich (komma-getrennt)",
+            placeholder="z.B. MSFT, AMZN, QQQ · max. 5",
+            key="bm_manual_" + bm_key,
+        )
+
+    # Freie Ticker-Eingabe (beide Kontexte)
+    if _manual_raw:
+        _manual_tickers = [x.strip().upper() for x in _manual_raw.split(",") if x.strip()]
+        for _tk in _manual_tickers[:5]:
+            if _tk not in _extra_series:
+                _h = _fetch_comparison_hist(_tk)
+                if not _h.empty:
+                    _extra_series[_tk] = _h
+                elif _tk:
+                    st.caption("⚠️ " + _tk + " — keine Daten gefunden.")
 
     # ── Period Selector ────────────────────────────────────────────────────────
     _P_OPTS = ["1M", "YTD", "1J", "3J", "5J"]
@@ -3449,52 +3510,43 @@ def _render_benchmark_vergleich(hist_stock=None, stock_label="Aktie",
 
     # ── Benchmark-Daten laden ──────────────────────────────────────────────────
     _bm_data = _fetch_benchmark_data()
-    if not _bm_data and (hist_stock is None or hist_stock.empty):
-        st.warning("⚠️ Benchmark-Daten nicht verfügbar.")
-        return
 
     # ── Chart aufbauen ─────────────────────────────────────────────────────────
     _fig = go.Figure()
     _perf_rows = []
 
-    # Aktie / Depot-Linie
+    def _add_line(ser, label, color, dash="solid", width=2.5):
+        _sp = ser[ser.index >= _cutoff]
+        if len(_sp) < 2:
+            return
+        _sn  = _sp / _sp.iloc[0] * 100
+        _ret = _sp.iloc[-1] / _sp.iloc[0] - 1
+        _lbl = label + " ({:+.1f}%)".format(_ret * 100)
+        _fig.add_trace(go.Scatter(
+            x=_sn.index, y=_sn.values, name=_lbl,
+            line=dict(color=color, width=width, dash=dash),
+            hovertemplate="%{x|%d.%m.%Y}: %{y:.1f}<extra>" + label + "</extra>",
+        ))
+        _perf_rows.append({
+            "Titel": label,
+            "Rendite (" + _p + ")": ("{:+.1f}%".format(_ret * 100),
+                                      "#3fb950" if _ret >= 0 else "#da3633"),
+        })
+
+    # 1. Aktie / Depot-Linie (wenn übergeben)
     if hist_stock is not None and not hist_stock.empty and "Close" in hist_stock.columns:
         _sh = hist_stock["Close"].copy()
         _sh.index = pd.to_datetime(_sh.index).tz_localize(None)
-        _sh_p = _sh[_sh.index >= _cutoff]
-        if len(_sh_p) >= 2:
-            _sh_n = _sh_p / _sh_p.iloc[0] * 100
-            _ret  = _sh_p.iloc[-1] / _sh_p.iloc[0] - 1
-            _lbl  = stock_label + " ({:+.1f}%)".format(_ret * 100)
-            _fig.add_trace(go.Scatter(
-                x=_sh_n.index, y=_sh_n.values, name=_lbl,
-                line=dict(color=stock_color, width=2.8),
-                hovertemplate="%{x|%d.%m.%Y}: %{y:.1f}<extra>" + stock_label + "</extra>",
-            ))
-            _perf_rows.append({
-                "Titel": stock_label,
-                "Rendite (" + _p + ")": ("{:+.1f}%".format(_ret * 100),
-                                          "#3fb950" if _ret >= 0 else "#da3633"),
-            })
+        _add_line(_sh, stock_label, stock_color, "solid", 2.8)
 
-    # Benchmark-Linien (gestrichelt)
+    # 2. Eigene Vergleichswerte (Multiselect + freie Eingabe)
+    for _ci, (_elabel, _eser) in enumerate(_extra_series.items()):
+        _add_line(_eser, _elabel, _EXTRA_COLORS[_ci % len(_EXTRA_COLORS)], "solid", 2.0)
+
+    # 3. Benchmark-Linien (gestrichelt)
     for _bm_nm, _bm_ser in _bm_data.items():
-        _bs = _bm_ser[_bm_ser.index >= _cutoff]
-        if len(_bs) >= 2:
-            _bs_n = _bs / _bs.iloc[0] * 100
-            _ret  = _bs.iloc[-1] / _bs.iloc[0] - 1
-            _lbl  = _bm_nm + " ({:+.1f}%)".format(_ret * 100)
-            _fig.add_trace(go.Scatter(
-                x=_bs_n.index, y=_bs_n.values, name=_lbl,
-                line=dict(color=_BM_LINE_COLORS.get(_bm_nm, "#8b949e"),
-                           width=1.6, dash="dot"),
-                hovertemplate="%{x|%d.%m.%Y}: %{y:.1f}<extra>" + _bm_nm + "</extra>",
-            ))
-            _perf_rows.append({
-                "Titel": _bm_nm,
-                "Rendite (" + _p + ")": ("{:+.1f}%".format(_ret * 100),
-                                          "#3fb950" if _ret >= 0 else "#da3633"),
-            })
+        _add_line(_bm_ser, _bm_nm,
+                  _BM_LINE_COLORS.get(_bm_nm, "#8b949e"), "dot", 1.6)
 
     # Baseline bei 100
     _fig.add_hline(y=100, line_color="#30363d", line_width=1, line_dash="dash")
@@ -3509,7 +3561,7 @@ def _render_benchmark_vergleich(hist_stock=None, stock_label="Aktie",
         yaxis=dict(gridcolor="#21262d"),
         xaxis=dict(gridcolor="#21262d"),
         margin=dict(t=60, b=20, l=50, r=20),
-        height=400,
+        height=420,
         hovermode="x unified",
     )
     st.plotly_chart(_fig, use_container_width=True)
@@ -3521,22 +3573,22 @@ def _render_benchmark_vergleich(hist_stock=None, stock_label="Aktie",
     # ── Multi-Perioden Tabelle ─────────────────────────────────────────────────
     with st.expander("📋 Alle Zeiträume im Vergleich"):
         _mp_all = [("1M", 30), ("YTD", None), ("1J", 365), ("3J", 1095), ("5J", 1825)]
-        _all_series = {}
+        _all_mp = {}
         if hist_stock is not None and not hist_stock.empty and "Close" in hist_stock.columns:
             _s = hist_stock["Close"].copy()
             _s.index = pd.to_datetime(_s.index).tz_localize(None)
-            _all_series[stock_label] = _s
+            _all_mp[stock_label] = _s
+        for _elb, _eser in _extra_series.items():
+            _all_mp[_elb] = _eser
         for _bm_nm, _bm_ser in _bm_data.items():
-            _all_series[_bm_nm] = _bm_ser
+            _all_mp[_bm_nm] = _bm_ser
 
         _mp_rows = []
-        for _title, _ser in _all_series.items():
+        for _title, _ser in _all_mp.items():
             _row = {"Titel": _title}
             for _plbl, _pdays in _mp_all:
-                if _pdays is None:
-                    _co = pd.Timestamp(_today.year, 1, 1)
-                else:
-                    _co = _today - pd.Timedelta(days=_pdays)
+                _co = (pd.Timestamp(_today.year, 1, 1) if _pdays is None
+                       else _today - pd.Timedelta(days=_pdays))
                 _sl = _ser[_ser.index >= _co]
                 if len(_sl) >= 2:
                     _r = _sl.iloc[-1] / _sl.iloc[0] - 1
@@ -3549,7 +3601,7 @@ def _render_benchmark_vergleich(hist_stock=None, stock_label="Aktie",
         if _mp_rows:
             st.markdown(_html_table(pd.DataFrame(_mp_rows)), unsafe_allow_html=True)
         st.caption("Benchmarks: S&P 500 (^GSPC) · MSCI World (IWDA.AS) · "
-                   "NASDAQ 100 (^NDX) · Daten via yfinance")
+                   "NASDAQ 100 (^NDX) · Daten via yfinance · max. 5 eigene Ticker")
 
 
 # ── Main Render ────────────────────────────────────────────────────────────────
@@ -8028,11 +8080,16 @@ def _render_depot():
             "ℹ️ Dein Depot: ~**{:+.1f}%** Gesamtrendite seit Einstieg (~EUR · FX-approximiert). "
             "Zum Vergleich: Benchmarks über Standardzeiträume unten.".format(_total_pnl_pct * 100)
         )
+    _depot_tickers_avail = [
+        {"label": _p["ticker"], "ticker": _p["ticker"]}
+        for _p in _positions
+    ]
     _render_benchmark_vergleich(
-        hist_stock=None,        # kein Portfolio-Zeitstrahl (keine Kaufdaten)
+        hist_stock=None,
         stock_label="Depot",
         stock_color="#388bfd",
         bm_key="depot",
+        available_tickers=_depot_tickers_avail,
     )
 
     st.markdown("---")
