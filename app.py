@@ -547,6 +547,7 @@ def _fetch_depot_ticker(symbol: str) -> dict:
             "week52_low":      info.get("fiftyTwoWeekLow"),
             "mktcap":          info.get("marketCap"),
             "day_change_pct":  _day_chg,
+            "website":         info.get("website") or "",
         }
     except Exception as exc:
         return {
@@ -554,7 +555,7 @@ def _fetch_depot_ticker(symbol: str) -> dict:
             "industry": "", "country": "", "currency": "USD",
             "div_yield": 0.0, "div_rate": 0.0,
             "week52_high": None, "week52_low": None, "mktcap": None,
-            "day_change_pct": 0.0, "error": str(exc),
+            "day_change_pct": 0.0, "website": "", "error": str(exc),
         }
 
 
@@ -8155,14 +8156,37 @@ def _render_depot():
         # Current market value — only show if price was actually fetched (> 0)
         _cv2_raw = _r2["curr_val_eur"]
         _cv2  = ("~€{:,.0f}".format(_cv2_raw)) if _cv2_raw and _cv2_raw > 0 else ""
+
+        # Logo: Clearbit CDN via yfinance website field, letter circle as fallback
+        _site = (_live.get(_r2["ticker"], {}).get("website") or "")
+        if _site.startswith("http"):
+            _site = _site.split("//", 1)[-1]
+        _logo_domain = _site.lstrip("www.").split("/")[0]
+        _logo_src = "https://logo.clearbit.com/" + _logo_domain if _logo_domain else ""
+        # Letter circle is always rendered (position:absolute background)
+        # Logo image is layered on top; onerror hides it → letter shows through
+        _icon_html = (
+            "<div style=\"position:relative;width:40px;height:40px;flex-shrink:0;\">"
+            "<div style=\"position:absolute;top:0;left:0;width:40px;height:40px;"
+            "border-radius:50%;background:" + _circ + ";display:flex;align-items:center;"
+            "justify-content:center;font-weight:700;font-size:16px;color:#0d1117;\">"
+            + _lett + "</div>"
+        )
+        if _logo_src:
+            _icon_html += (
+                "<img src=\"" + _logo_src + "\""
+                " style=\"position:absolute;top:0;left:0;width:40px;height:40px;"
+                "border-radius:50%;object-fit:contain;background:#21262d;\""
+                " onerror=\"this.style.display='none'\">"
+            )
+        _icon_html += "</div>"
+
         _cards_html += (
             "<div style=\"background:#161b22;border:1px solid #30363d;border-radius:10px;"
             "padding:12px 16px;display:flex;align-items:center;justify-content:space-between;\">"
-            # Left: circle + info
+            # Left: logo/circle + info
             "<div style=\"display:flex;align-items:center;gap:12px;\">"
-            "<div style=\"width:40px;height:40px;border-radius:50%;background:" + _circ + ";"
-            "display:flex;align-items:center;justify-content:center;"
-            "font-weight:700;font-size:16px;color:#0d1117;flex-shrink:0;\">" + _lett + "</div>"
+            + _icon_html +
             "<div>"
             "<div style=\"font-weight:600;color:#e6edf3;font-size:14px;\">" + _nm2 + "</div>"
             "<div style=\"margin-top:3px;\">"
