@@ -555,6 +555,24 @@ def _fetch_depot_ticker(symbol: str) -> dict:
         }
 
 
+# ── Benchmark-Daten (S&P 500 · MSCI World · NASDAQ 100) ──────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_benchmark_data() -> dict:
+    """Holt 5J-Historien für S&P 500, MSCI World (IWDA.AS), NASDAQ 100."""
+    _bm = [("S&P 500", "^GSPC"), ("MSCI World", "IWDA.AS"), ("NASDAQ 100", "^NDX")]
+    _out = {}
+    for _bm_name, _bm_tk in _bm:
+        try:
+            _h = yf.Ticker(_bm_tk).history(period="5y")
+            if not _h.empty and "Close" in _h.columns:
+                _s = _h["Close"].copy()
+                _s.index = pd.to_datetime(_s.index).tz_localize(None)
+                _out[_bm_name] = _s
+        except Exception:
+            pass
+    return _out
+
+
 # ── Metric calculation ─────────────────────────────────────────────────────────
 def calc_metrics(raw: dict) -> dict:  # noqa: C901
     info  = raw.get("info", {})
@@ -3394,6 +3412,146 @@ def _render_cockpit(symbol: str, m: dict, j: dict, hist: pd.DataFrame):
         _mc2.markdown(_right_html, unsafe_allow_html=True)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# BENCHMARK-VERGLEICH  —  Aktie / Depot vs. S&P 500 · MSCI World · NASDAQ 100
+# ══════════════════════════════════════════════════════════════════════════════
+_BM_LINE_COLORS = {
+    "S&P 500":    "#3fb950",   # grün
+    "MSCI World": "#e3b341",   # amber
+    "NASDAQ 100": "#79c0ff",   # hellblau
+}
+
+
+def _render_benchmark_vergleich(hist_stock=None, stock_label="Aktie",
+                                 stock_color="#388bfd", bm_key=""):
+    """Relative Performance-Vergleich: Aktie/Depot vs. S&P 500, MSCI World, NASDAQ 100."""
+
+    st.markdown("### 📊 Benchmark-Vergleich")
+
+    # ── Period Selector ────────────────────────────────────────────────────────
+    _P_OPTS = ["1M", "YTD", "1J", "3J", "5J"]
+    _p = st.radio(
+        "Zeitraum", _P_OPTS, horizontal=True, index=2,
+        key="bm_p_" + bm_key, label_visibility="collapsed",
+    )
+
+    _today = pd.Timestamp.now().normalize()
+    if _p == "YTD":
+        _cutoff = pd.Timestamp(_today.year, 1, 1)
+    elif _p == "1M":
+        _cutoff = _today - pd.Timedelta(days=30)
+    elif _p == "1J":
+        _cutoff = _today - pd.Timedelta(days=365)
+    elif _p == "3J":
+        _cutoff = _today - pd.Timedelta(days=1095)
+    else:  # 5J
+        _cutoff = _today - pd.Timedelta(days=1825)
+
+    # ── Benchmark-Daten laden ──────────────────────────────────────────────────
+    _bm_data = _fetch_benchmark_data()
+    if not _bm_data and (hist_stock is None or hist_stock.empty):
+        st.warning("⚠️ Benchmark-Daten nicht verfügbar.")
+        return
+
+    # ── Chart aufbauen ─────────────────────────────────────────────────────────
+    _fig = go.Figure()
+    _perf_rows = []
+
+    # Aktie / Depot-Linie
+    if hist_stock is not None and not hist_stock.empty and "Close" in hist_stock.columns:
+        _sh = hist_stock["Close"].copy()
+        _sh.index = pd.to_datetime(_sh.index).tz_localize(None)
+        _sh_p = _sh[_sh.index >= _cutoff]
+        if len(_sh_p) >= 2:
+            _sh_n = _sh_p / _sh_p.iloc[0] * 100
+            _ret  = _sh_p.iloc[-1] / _sh_p.iloc[0] - 1
+            _lbl  = stock_label + " ({:+.1f}%)".format(_ret * 100)
+            _fig.add_trace(go.Scatter(
+                x=_sh_n.index, y=_sh_n.values, name=_lbl,
+                line=dict(color=stock_color, width=2.8),
+                hovertemplate="%{x|%d.%m.%Y}: %{y:.1f}<extra>" + stock_label + "</extra>",
+            ))
+            _perf_rows.append({
+                "Titel": stock_label,
+                "Rendite (" + _p + ")": ("{:+.1f}%".format(_ret * 100),
+                                          "#3fb950" if _ret >= 0 else "#da3633"),
+            })
+
+    # Benchmark-Linien (gestrichelt)
+    for _bm_nm, _bm_ser in _bm_data.items():
+        _bs = _bm_ser[_bm_ser.index >= _cutoff]
+        if len(_bs) >= 2:
+            _bs_n = _bs / _bs.iloc[0] * 100
+            _ret  = _bs.iloc[-1] / _bs.iloc[0] - 1
+            _lbl  = _bm_nm + " ({:+.1f}%)".format(_ret * 100)
+            _fig.add_trace(go.Scatter(
+                x=_bs_n.index, y=_bs_n.values, name=_lbl,
+                line=dict(color=_BM_LINE_COLORS.get(_bm_nm, "#8b949e"),
+                           width=1.6, dash="dot"),
+                hovertemplate="%{x|%d.%m.%Y}: %{y:.1f}<extra>" + _bm_nm + "</extra>",
+            ))
+            _perf_rows.append({
+                "Titel": _bm_nm,
+                "Rendite (" + _p + ")": ("{:+.1f}%".format(_ret * 100),
+                                          "#3fb950" if _ret >= 0 else "#da3633"),
+            })
+
+    # Baseline bei 100
+    _fig.add_hline(y=100, line_color="#30363d", line_width=1, line_dash="dash")
+
+    _fig.update_layout(
+        title=dict(text="Relative Performance · Basis 100 · " + _p,
+                   font=dict(color="#e6edf3", size=13)),
+        paper_bgcolor="#0d1117", plot_bgcolor="#161b22",
+        font=dict(color="#e6edf3"),
+        legend=dict(font=dict(color="#8b949e", size=10), bgcolor="#0d1117",
+                    orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        yaxis=dict(gridcolor="#21262d"),
+        xaxis=dict(gridcolor="#21262d"),
+        margin=dict(t=60, b=20, l=50, r=20),
+        height=400,
+        hovermode="x unified",
+    )
+    st.plotly_chart(_fig, use_container_width=True)
+
+    # ── Rendite-Tabelle (aktuelle Periode) ────────────────────────────────────
+    if _perf_rows:
+        st.markdown(_html_table(pd.DataFrame(_perf_rows)), unsafe_allow_html=True)
+
+    # ── Multi-Perioden Tabelle ─────────────────────────────────────────────────
+    with st.expander("📋 Alle Zeiträume im Vergleich"):
+        _mp_all = [("1M", 30), ("YTD", None), ("1J", 365), ("3J", 1095), ("5J", 1825)]
+        _all_series = {}
+        if hist_stock is not None and not hist_stock.empty and "Close" in hist_stock.columns:
+            _s = hist_stock["Close"].copy()
+            _s.index = pd.to_datetime(_s.index).tz_localize(None)
+            _all_series[stock_label] = _s
+        for _bm_nm, _bm_ser in _bm_data.items():
+            _all_series[_bm_nm] = _bm_ser
+
+        _mp_rows = []
+        for _title, _ser in _all_series.items():
+            _row = {"Titel": _title}
+            for _plbl, _pdays in _mp_all:
+                if _pdays is None:
+                    _co = pd.Timestamp(_today.year, 1, 1)
+                else:
+                    _co = _today - pd.Timedelta(days=_pdays)
+                _sl = _ser[_ser.index >= _co]
+                if len(_sl) >= 2:
+                    _r = _sl.iloc[-1] / _sl.iloc[0] - 1
+                    _row[_plbl] = ("{:+.1f}%".format(_r * 100),
+                                   "#3fb950" if _r >= 0 else "#da3633")
+                else:
+                    _row[_plbl] = ("—", "#8b949e")
+            _mp_rows.append(_row)
+
+        if _mp_rows:
+            st.markdown(_html_table(pd.DataFrame(_mp_rows)), unsafe_allow_html=True)
+        st.caption("Benchmarks: S&P 500 (^GSPC) · MSCI World (IWDA.AS) · "
+                   "NASDAQ 100 (^NDX) · Daten via yfinance")
+
+
 # ── Main Render ────────────────────────────────────────────────────────────────
 def render(symbol: str, m: dict, j: dict, hist: pd.DataFrame, eps_hist: pd.DataFrame = None):
     sym_sign = "€" if m.get("currency") == "EUR" else "$"
@@ -3671,6 +3829,15 @@ def render(symbol: str, m: dict, j: dict, hist: pd.DataFrame, eps_hist: pd.DataF
         _render_technical_insider(j, m)
         _render_daten_hierarchie(m)
         _render_sec_crossval(m)
+
+    # ── BENCHMARK-VERGLEICH (immer am Ende der Einzelanalyse) ────────────────
+    st.markdown("---")
+    _render_benchmark_vergleich(
+        hist_stock=hist,
+        stock_label=name,
+        stock_color="#388bfd",
+        bm_key=symbol,
+    )
 
 
 def _k_threshold(name):
@@ -7852,6 +8019,21 @@ def _render_depot():
         st.plotly_chart(_fig_perf, use_container_width=True)
     else:
         st.info("ℹ️ Kaufpreise für alle Positionen eingeben, um die Performance zu sehen.")
+
+    st.markdown("---")
+
+    # ── BENCHMARK-VERGLEICH (Depot) ───────────────────────────────────────────
+    if _total_pnl_pct is not None:
+        st.caption(
+            "ℹ️ Dein Depot: ~**{:+.1f}%** Gesamtrendite seit Einstieg (~EUR · FX-approximiert). "
+            "Zum Vergleich: Benchmarks über Standardzeiträume unten.".format(_total_pnl_pct * 100)
+        )
+    _render_benchmark_vergleich(
+        hist_stock=None,        # kein Portfolio-Zeitstrahl (keine Kaufdaten)
+        stock_label="Depot",
+        stock_color="#388bfd",
+        bm_key="depot",
+    )
 
     st.markdown("---")
 
