@@ -7983,12 +7983,15 @@ def _render_depot():
         _port_idx = _port_s
 
     # Hero period P&L (from sparkline or fallback to cost-basis P&L)
+    # Anzahl Positionen mit echtem Live-Kurs
+    _prices_loaded = sum(1 for _r in _rows if _r["price"] > 0)
     _hero_pct = None
     _hero_abs = None
     if _port_idx is not None and len(_port_idx) >= 2:
         _hero_pct = float(_port_idx.iloc[-1]) - 1.0
         _hero_abs = _hero_pct * _total_invested if _total_invested > 0 else None
-    if _hero_pct is None and _total_pnl_pct is not None:
+    # Fallback auf cost-basis P&L nur wenn mind. die Hälfte der Kurse geladen
+    if _hero_pct is None and _total_pnl_pct is not None and _prices_loaded >= len(_rows) // 2:
         _hero_pct = _total_pnl_pct
         _hero_abs = _total_pnl
 
@@ -8085,13 +8088,16 @@ def _render_depot():
 
     # ── Per-Position Period Return ─────────────────────────────────────────────
     for _r in _rows:
-        _tk2 = _r["ticker"]
-        _pr  = None
+        _tk2       = _r["ticker"]
+        _price_ok  = (_r["price"] > 0)   # False wenn yfinance keinen Kurs lieferte
+        _pr        = None
         if _dp == "Seit Kauf":
-            _pr = _r["pnl_pct"]
+            # nur zeigen wenn Live-Kurs tatsächlich geladen wurde
+            _pr = _r["pnl_pct"] if _price_ok else None
         elif _dp == "1T":
-            _pr = _live.get(_tk2, {}).get("day_change_pct", 0.0)
+            _pr = _live.get(_tk2, {}).get("day_change_pct") if _price_ok else None
         else:
+            # historische Perioden: _fetch_comparison_hist — unabhängig vom Live-Kurs
             if _tk2 in _depot_hists:
                 _hd2  = _depot_hists[_tk2]
                 _hd2c = _hd2[_hd2.index >= _dp_cutoff]
@@ -8124,9 +8130,19 @@ def _render_depot():
     _cards_html = "<div style=\"display:flex;flex-direction:column;gap:8px;margin-top:12px;\">"
     for _ri, _r2 in enumerate(_rows_s):
         _pr2  = _r2.get("period_ret")
-        _pc2  = "#3fb950" if (_pr2 or 0) >= 0 else "#da3633"
-        _pa2  = "▲" if (_pr2 or 0) >= 0 else "▼"
-        _ps2  = "{:+.1%}".format(_pr2) if _pr2 is not None else "—"
+        # Farbe + Pfeil nur wenn wirklich ein Wert vorhanden
+        if _pr2 is None:
+            _pc2 = "#8b949e"
+            _pa2 = ""
+            _ps2 = "—"
+        elif _pr2 >= 0:
+            _pc2 = "#3fb950"
+            _pa2 = "▲ "
+            _ps2 = "{:+.1%}".format(_pr2)
+        else:
+            _pc2 = "#da3633"
+            _pa2 = "▼ "
+            _ps2 = "{:+.1%}".format(_pr2)
         _circ = _CCOLORS[_ri % len(_CCOLORS)]
         _lett = _r2["ticker"][0].upper()
         _nm2  = _r2["name"]
