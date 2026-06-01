@@ -8035,6 +8035,7 @@ def _render_depot():
     )
 
     # ── Sparkline Chart ────────────────────────────────────────────────────────
+    # ── Sparkline Chart (mit Achsen + Referenzlinie) ──────────────────────────
     _fig_spark = go.Figure()
     if _port_idx is not None and len(_port_idx) >= 2:
         _base_val  = _total_invested if _total_invested > 0 else _total_curr_eur
@@ -8042,19 +8043,68 @@ def _render_depot():
         _spark_x   = list(_port_idx.index)
         _spark_col = "#3fb950" if (_hero_pct or 0) >= 0 else "#da3633"
         _fill_col  = "rgba(63,185,80,0.12)" if (_hero_pct or 0) >= 0 else "rgba(218,54,51,0.12)"
+
+        # Portfolio-Kurve
         _fig_spark.add_trace(go.Scatter(
-            x=_spark_x, y=_spark_y, mode="lines", fill="tozeroy",
+            x=_spark_x, y=_spark_y,
+            mode="lines", fill="tozeroy",
             line=dict(color=_spark_col, width=2),
             fillcolor=_fill_col,
-            hovertemplate="~€%{y:,.0f}<extra></extra>",
+            name="Portfolio",
+            hovertemplate="%{x|%d.%m.%Y} &nbsp; ~€%{y:,.0f}<extra></extra>",
         ))
-    _fig_spark.update_layout(
-        paper_bgcolor="#161b22", plot_bgcolor="#161b22",
-        margin=dict(t=4, b=4, l=0, r=0), height=140,
-        xaxis=dict(visible=False, showgrid=False, zeroline=False),
-        yaxis=dict(visible=False, showgrid=False, zeroline=False),
-        showlegend=False,
-    )
+        # Referenzlinie: Investiertes Kapital (Kostenbasis)
+        if _total_invested > 0:
+            _fig_spark.add_hline(
+                y=_total_invested,
+                line_color="#8b949e", line_dash="dot", line_width=1,
+                annotation_text="Invest. €{:,.0f}".format(_total_invested),
+                annotation_font_color="#8b949e",
+                annotation_font_size=10,
+                annotation_position="bottom right",
+            )
+        # Endwert-Annotation (rechts)
+        _fig_spark.add_annotation(
+            x=_spark_x[-1], y=_spark_y[-1],
+            text="~€{:,.0f}".format(_spark_y[-1]),
+            showarrow=False,
+            xanchor="left", yanchor="middle",
+            xshift=6,
+            font=dict(color=_spark_col, size=11, family="monospace"),
+        )
+        _fig_spark.update_layout(
+            paper_bgcolor="#161b22", plot_bgcolor="#161b22",
+            margin=dict(t=10, b=40, l=65, r=80),
+            height=200,
+            xaxis=dict(
+                showgrid=False, zeroline=False,
+                tickfont=dict(color="#8b949e", size=10),
+                tickformat="%b %Y" if _dp not in ("1T", "1W") else "%d.%m.",
+                showticklabels=True,
+                linecolor="#30363d",
+            ),
+            yaxis=dict(
+                showgrid=True, gridcolor="#21262d", zeroline=False,
+                tickfont=dict(color="#8b949e", size=10),
+                tickprefix="€", tickformat=",.0f",
+                showticklabels=True,
+            ),
+            showlegend=False,
+            hovermode="x unified",
+        )
+    else:
+        # Kein Datensatz verfügbar → Placeholder-Annotation
+        _fig_spark.add_annotation(
+            x=0.5, y=0.5, xref="paper", yref="paper",
+            text="📊 Historische Daten werden geladen …",
+            showarrow=False,
+            font=dict(color="#8b949e", size=13),
+        )
+        _fig_spark.update_layout(
+            paper_bgcolor="#161b22", plot_bgcolor="#161b22",
+            margin=dict(t=10, b=10, l=10, r=10), height=120,
+            xaxis=dict(visible=False), yaxis=dict(visible=False),
+        )
     st.plotly_chart(_fig_spark, use_container_width=True)
 
     # ── Period Selector Buttons ────────────────────────────────────────────────
@@ -8290,34 +8340,54 @@ def _render_depot():
     st.markdown("### 📈 Performance")
     st.caption("~EUR-approximiert via Fixkurse · Kaufpreis exakt in EUR · Aktueller Wert umgerechnet")
 
-    _perf_rows = [_r for _r in _rows if _r["pnl_pct"] is not None]
+    # Nur Positionen mit echtem Live-Kurs UND eingetragenem Kaufpreis
+    _perf_rows = [_r for _r in _rows if _r["pnl_pct"] is not None and _r["price"] > 0]
+    _perf_missing = [_r["ticker"] for _r in _rows if _r["price"] == 0]
+
+    if _perf_missing:
+        st.caption("⚠️ Kurs nicht geladen (yfinance): " + ", ".join(_perf_missing)
+                   + " — diese Positionen fehlen im Chart.")
+
     if _perf_rows:
         _perf_sorted  = sorted(_perf_rows, key=lambda x: x["pnl_pct"], reverse=True)
         _perf_tickers = [_r["ticker"] for _r in _perf_sorted]
         _perf_pcts    = [(_r["pnl_pct"] or 0) * 100 for _r in _perf_sorted]
+        _perf_abs     = [(_r["pnl_eur"] or 0) for _r in _perf_sorted]
         _perf_colors  = ["#3fb950" if v >= 0 else "#da3633" for v in _perf_pcts]
         _perf_texts   = ["{:+.1f}%".format(v) for v in _perf_pcts]
+        _perf_hover   = [
+            "{}: {:+.1f}% &nbsp;(~€{:+,.0f})".format(
+                _perf_tickers[_i], _perf_pcts[_i], _perf_abs[_i]
+            )
+            for _i in range(len(_perf_tickers))
+        ]
 
         _fig_perf = go.Figure(go.Bar(
             x=_perf_tickers, y=_perf_pcts,
             marker_color=_perf_colors,
             text=_perf_texts, textposition="outside",
-            hovertemplate="%{x}: %{y:+.2f}%<extra></extra>",
+            customdata=_perf_abs,
+            hovertemplate="%{x}: %{y:+.2f}% &nbsp; ~€%{customdata:+,.0f}<extra></extra>",
         ))
         _fig_perf.add_hline(y=0, line_color="#30363d", line_width=1)
         _fig_perf.update_layout(
-            title="Unrealisierte Rendite pro Position (% · ~EUR-approximiert)",
+            title=dict(
+                text="Unrealisierte Rendite pro Position (% · ~EUR)",
+                font=dict(color="#e6edf3", size=13),
+            ),
             paper_bgcolor="#0d1117", plot_bgcolor="#161b22",
             font=dict(color="#e6edf3"),
-            yaxis=dict(gridcolor="#21262d", ticksuffix="%", title="Rendite"),
-            xaxis=dict(gridcolor="#21262d"),
-            margin=dict(t=40, b=50, l=50, r=20),
-            height=380,
-            xaxis_tickangle=-45,
+            yaxis=dict(
+                gridcolor="#21262d", ticksuffix="%", title="Rendite",
+                zeroline=True, zerolinecolor="#30363d", zerolinewidth=1,
+            ),
+            xaxis=dict(gridcolor="#21262d", tickangle=-40),
+            margin=dict(t=44, b=60, l=55, r=20),
+            height=400,
         )
         st.plotly_chart(_fig_perf, use_container_width=True)
     else:
-        st.info("ℹ️ Kaufpreise für alle Positionen eingeben, um die Performance zu sehen.")
+        st.info("⏳ Kurse werden geladen — bitte kurz warten und Seite neu laden.")
 
     st.markdown("---")
 
