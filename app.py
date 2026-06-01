@@ -547,8 +547,8 @@ def _fetch_depot_ticker(symbol: str) -> dict:
         }
     except Exception as exc:
         return {
-            "price": 0.0, "name": symbol, "sector": "Fehler",
-            "industry": "Fehler", "country": "Unbekannt", "currency": "USD",
+            "price": 0.0, "name": symbol, "sector": "",
+            "industry": "", "country": "", "currency": "USD",
             "div_yield": 0.0, "div_rate": 0.0,
             "week52_high": None, "week52_low": None, "mktcap": None,
             "error": str(exc),
@@ -7517,34 +7517,49 @@ def _render_battle(ta: str, ma: dict, ja: dict, tb: str, mb: dict, jb: dict):
 
 # Brian's Portfolio — Ø EK in EUR (Broker-Basis), Stand: 2025/2026
 _DEPOT_DEFAULT = [
-    {"ticker": "NVO",      "shares": 150.0,  "cost_basis": 39.51,    "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa"},
-    {"ticker": "SOFI",     "shares": 250.0,  "cost_basis": 10.45,    "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "RMS.PA",   "shares": 1.0,    "cost_basis": 1905.09,  "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa"},
-    {"ticker": "CSU.TO",   "shares": 1.0,    "cost_basis": 1380.00,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "NOW",      "shares": 20.0,   "cost_basis": 97.45,    "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "MELI",     "shares": 1.0,    "cost_basis": 1442.80,  "purchase_date": "", "asset_class": "Aktie", "region_override": "LatAm"},
-    {"ticker": "INTU",     "shares": 4.0,    "cost_basis": 426.93,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "SNPS",     "shares": 4.0,    "cost_basis": 341.53,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "MSFT",     "shares": 4.0,    "cost_basis": 345.25,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "MUV2.DE",  "shares": 2.0,    "cost_basis": 525.50,   "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa"},
-    {"ticker": "6861.T",   "shares": 3.0,    "cost_basis": 319.80,   "purchase_date": "", "asset_class": "Aktie", "region_override": "Japan"},
-    {"ticker": "PGHN.SW",  "shares": 1.0,    "cost_basis": 886.00,   "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa"},
-    {"ticker": "GRAB",     "shares": 270.0,  "cost_basis": 4.07,     "purchase_date": "", "asset_class": "Aktie", "region_override": "Asien"},
-    {"ticker": "DB1.DE",   "shares": 3.0,    "cost_basis": 235.60,   "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa"},
-    {"ticker": "SPGI",     "shares": 2.0,    "cost_basis": 305.65,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "CRWD",     "shares": 2.0,    "cost_basis": 342.35,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "HLI",      "shares": 5.0,    "cost_basis": 119.80,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "CTAS",     "shares": 4.0,    "cost_basis": 156.86,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "BR",       "shares": 8.0,    "cost_basis": 139.96,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "AMZN",     "shares": 3.0,    "cost_basis": 169.90,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "BN",       "shares": 15.0,   "cost_basis": 33.70,    "purchase_date": "", "asset_class": "Aktie", "region_override": "USA/KAN"},
-    {"ticker": "V",        "shares": 2.0,    "cost_basis": 266.25,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "8001.T",   "shares": 100.0,  "cost_basis": 10.935,   "purchase_date": "", "asset_class": "Aktie", "region_override": "Japan"},
-    {"ticker": "3064.T",   "shares": 50.0,   "cost_basis": 10.70,    "purchase_date": "", "asset_class": "Aktie", "region_override": "Japan"},
-    {"ticker": "SYK",      "shares": 4.0,    "cost_basis": 267.43,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
-    {"ticker": "NETC.CO",  "shares": 20.0,   "cost_basis": 53.95,    "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa"},
-    {"ticker": "ISRG",     "shares": 2.0,    "cost_basis": 392.10,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA"},
+    {"ticker": "NVO",     "shares": 150.0, "cost_basis": 39.51,   "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa",  "sector_override": "Gesundheit"},
+    {"ticker": "SOFI",    "shares": 250.0, "cost_basis": 10.45,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Finanzen"},
+    {"ticker": "RMS.PA",  "shares": 1.0,   "cost_basis": 1905.09, "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa",  "sector_override": "Luxus / Konsum"},
+    {"ticker": "CSU.TO",  "shares": 1.0,   "cost_basis": 1380.00, "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Tech"},
+    {"ticker": "NOW",     "shares": 20.0,  "cost_basis": 97.45,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Tech"},
+    {"ticker": "MELI",    "shares": 1.0,   "cost_basis": 1442.80, "purchase_date": "", "asset_class": "Aktie", "region_override": "LatAm",   "sector_override": "E-Commerce"},
+    {"ticker": "INTU",    "shares": 4.0,   "cost_basis": 426.93,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Tech"},
+    {"ticker": "SNPS",    "shares": 4.0,   "cost_basis": 341.53,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Tech"},
+    {"ticker": "MSFT",    "shares": 4.0,   "cost_basis": 345.25,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Tech"},
+    {"ticker": "MUV2.DE", "shares": 2.0,   "cost_basis": 525.50,  "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa",  "sector_override": "Finanzen"},
+    {"ticker": "6861.T",  "shares": 3.0,   "cost_basis": 319.80,  "purchase_date": "", "asset_class": "Aktie", "region_override": "Japan",   "sector_override": "Tech / Industrie"},
+    {"ticker": "PGHN.SW", "shares": 1.0,   "cost_basis": 886.00,  "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa",  "sector_override": "Finanzen"},
+    {"ticker": "GRAB",    "shares": 270.0, "cost_basis": 4.07,    "purchase_date": "", "asset_class": "Aktie", "region_override": "Asien",   "sector_override": "Tech / Transport"},
+    {"ticker": "DB1.DE",  "shares": 3.0,   "cost_basis": 235.60,  "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa",  "sector_override": "Finanzen"},
+    {"ticker": "SPGI",    "shares": 2.0,   "cost_basis": 305.65,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Finanzen"},
+    {"ticker": "CRWD",    "shares": 2.0,   "cost_basis": 342.35,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Tech"},
+    {"ticker": "HLI",     "shares": 5.0,   "cost_basis": 119.80,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Finanzen"},
+    {"ticker": "CTAS",    "shares": 4.0,   "cost_basis": 156.86,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Industrie"},
+    {"ticker": "BR",      "shares": 8.0,   "cost_basis": 139.96,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Finanzen"},
+    {"ticker": "AMZN",    "shares": 3.0,   "cost_basis": 169.90,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Tech"},
+    {"ticker": "BN",      "shares": 15.0,  "cost_basis": 33.70,   "purchase_date": "", "asset_class": "Aktie", "region_override": "USA/KAN", "sector_override": "Finanzen"},
+    {"ticker": "V",       "shares": 2.0,   "cost_basis": 266.25,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Finanzen"},
+    {"ticker": "8001.T",  "shares": 100.0, "cost_basis": 10.935,  "purchase_date": "", "asset_class": "Aktie", "region_override": "Japan",   "sector_override": "Industrie"},
+    {"ticker": "3064.T",  "shares": 50.0,  "cost_basis": 10.70,   "purchase_date": "", "asset_class": "Aktie", "region_override": "Japan",   "sector_override": "Industrie"},
+    {"ticker": "SYK",     "shares": 4.0,   "cost_basis": 267.43,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Gesundheit"},
+    {"ticker": "NETC.CO", "shares": 20.0,  "cost_basis": 53.95,   "purchase_date": "", "asset_class": "Aktie", "region_override": "Europa",  "sector_override": "Tech"},
+    {"ticker": "ISRG",    "shares": 2.0,   "cost_basis": 392.10,  "purchase_date": "", "asset_class": "Aktie", "region_override": "USA",     "sector_override": "Gesundheit"},
 ]
+
+# yfinance Sektoren (Englisch) → Deutsch
+_YF_SECTOR_DE = {
+    "Technology":             "Tech",
+    "Healthcare":             "Gesundheit",
+    "Financial Services":     "Finanzen",
+    "Consumer Cyclical":      "Konsum (zyklisch)",
+    "Consumer Defensive":     "Konsum (defensiv)",
+    "Industrials":            "Industrie",
+    "Basic Materials":        "Rohstoffe",
+    "Energy":                 "Energie",
+    "Real Estate":            "Immobilien",
+    "Utilities":              "Versorger",
+    "Communication Services": "Kommunikation",
+}
 
 # Näherungsweise FX-Raten → EUR (für P&L-Approximation; kein Ersatz für Live-Kurse)
 _DEPOT_FX_EUR = {
@@ -7640,6 +7655,12 @@ def _render_depot():
         _region       = _p.get("region_override") or _d.get("country") or "Unbekannt"
         _div_ann      = (_d.get("div_rate") or 0.0) * _shares * _fx  # approx EUR
 
+        # Sektor: sector_override > yfinance (DE-übersetzt) > "Unbekannt"
+        _yf_sec  = _d.get("sector") or ""
+        _yf_sec  = _YF_SECTOR_DE.get(_yf_sec, _yf_sec)
+        _sector  = _p.get("sector_override") or _yf_sec or "Unbekannt"
+        _industry = _d.get("industry") or _p.get("sector_override") or "Unbekannt"
+
         _rows.append({
             "ticker":         _p["ticker"],
             "name":           _d.get("name", _p["ticker"]),
@@ -7654,8 +7675,8 @@ def _render_depot():
             "pnl_eur":        _pnl_eur,        # approx EUR
             "pnl_pct":        _pnl_pct,
             "fx":             _fx,
-            "sector":         _d.get("sector") or "Unbekannt",
-            "industry":       _d.get("industry") or "Unbekannt",
+            "sector":         _sector,
+            "industry":       _industry,
             "country":        _d.get("country") or "Unbekannt",
             "region":         _region,
             "asset_class":    _p.get("asset_class", "Aktie"),
