@@ -7997,6 +7997,8 @@ def _render_depot():
     _h_pct_s = "{:+.1%}".format(_hero_pct) if _hero_pct is not None else "—"
     _h_abs_s = "~€{:+,.0f} &nbsp;".format(_hero_abs) if _hero_abs is not None else ""
     _val_fmt = "~€{:,.0f}".format(_total_curr_eur)
+    _inv_fmt = "€{:,.0f}".format(_total_invested) if _total_invested > 0 else "—"
+    _div_fmt = "~€{:,.0f}".format(_total_div_eur)
 
     # ── Hero Card ─────────────────────────────────────────────────────────────
     st.markdown(
@@ -8013,7 +8015,18 @@ def _render_depot():
         + "<span>(" + _h_pct_s + ")</span>"
         "<span style=\"color:#8b949e;font-size:12px;font-weight:400;margin-left:10px;\">"
         + _dp + "</span>"
-        "</div></div>",
+        "</div>"
+        # Stats row: Investiert · Akt. Wert · Div./Jahr
+        "<div style=\"display:flex;gap:28px;margin-top:14px;padding-top:12px;"
+        "border-top:1px solid #30363d;\">"
+        "<div><div style=\"font-size:12px;color:#8b949e;margin-bottom:2px;\">Investiert (exakt)</div>"
+        "<div style=\"font-size:14px;font-weight:600;color:#e6edf3;\">" + _inv_fmt + "</div></div>"
+        "<div><div style=\"font-size:12px;color:#8b949e;margin-bottom:2px;\">Akt. Wert (~FX)</div>"
+        "<div style=\"font-size:14px;font-weight:600;color:#e6edf3;\">" + _val_fmt + "</div></div>"
+        "<div><div style=\"font-size:12px;color:#8b949e;margin-bottom:2px;\">Div./Jahr (~)</div>"
+        "<div style=\"font-size:14px;font-weight:600;color:#e6edf3;\">" + _div_fmt + "</div></div>"
+        "</div>"
+        "</div>",
         unsafe_allow_html=True
     )
 
@@ -8122,6 +8135,8 @@ def _render_depot():
         _sh2  = "{:.4f}".format(_r2["shares"]).rstrip("0").rstrip(".")
         _vl2  = "~€{:,.0f}".format(_r2["curr_val_eur"])
         _wt2  = "{:.1%}".format(_r2["weight"])
+        _ek2  = "€{:.2f}".format(_r2["cost_basis"]) if _r2["cost_basis"] > 0 else "—"
+        _iv2  = "€{:,.0f}".format(_r2["inv_val"]) if _r2["inv_val"] else "—"
         _cards_html += (
             "<div style=\"background:#161b22;border:1px solid #30363d;border-radius:10px;"
             "padding:12px 16px;display:flex;align-items:center;justify-content:space-between;\">"
@@ -8137,8 +8152,11 @@ def _render_depot():
             "padding:1px 6px;font-size:11px;color:#8b949e;font-family:monospace;\">"
             + _r2["ticker"] + "</span>"
             "&nbsp;<span style=\"color:#8b949e;font-size:12px;\">" + _sh2 + " Stück</span>"
-            "</div></div></div>"
-            # Right: value + period return + weight
+            "</div>"
+            "<div style=\"margin-top:3px;color:#8b949e;font-size:11px;\">"
+            "Ø EK " + _ek2 + " &nbsp;·&nbsp; investiert " + _iv2 + "</div>"
+            "</div></div>"
+            # Right: current value + period return + weight
             "<div style=\"text-align:right;flex-shrink:0;\">"
             "<div style=\"font-size:15px;font-weight:600;color:#e6edf3;\">" + _vl2 + "</div>"
             "<div style=\"font-size:13px;font-weight:600;color:" + _pc2 + ";margin-top:2px;\">"
