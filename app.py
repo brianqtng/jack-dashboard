@@ -1,4 +1,5 @@
 """JACK – The Moat Reaper  |  Screening-Feed: Yahoo Finance (Stufe 3)  |  Primärquelle: SEC EDGAR / IR (Stufe 1)"""
+import time
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -482,81 +483,100 @@ def resolve_input(raw: str) -> tuple:
 # ── Data fetching ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch(symbol: str) -> dict:
-    try:
-        t = yf.Ticker(symbol)
-        info = t.info or {}
-        if not _i(info, "currentPrice", "regularMarketPrice", "previousClose"):
-            hist_check = t.history(period="5d")
-            if hist_check.empty:
-                return {"error": f"Ticker '{symbol}' nicht gefunden oder kein Handel."}
-        fin   = t.financials
-        bs    = t.balance_sheet
-        cf    = t.cashflow
-        q_fin   = t.quarterly_financials
-        q_cf    = t.quarterly_cashflow
-        hist    = t.history(period="3y")
+    _rl_keywords = ("too many requests", "rate limit", "429", "no crumb")
+    for _attempt in range(3):
         try:
-            eps_hist = t.earnings_history
-        except Exception:
-            eps_hist = pd.DataFrame()
-        # SEC EDGAR (Stufe 1) — nur für US-Ticker (kein Punkt im Symbol)
-        sec = {"available": False, "reason": "Nicht-US Ticker"}
-        if "." not in symbol:
+            t = yf.Ticker(symbol)
+            info = t.info or {}
+            if not _i(info, "currentPrice", "regularMarketPrice", "previousClose"):
+                hist_check = t.history(period="5d")
+                if hist_check.empty:
+                    return {"error": f"Ticker '{symbol}' nicht gefunden oder kein Handel."}
+            fin   = t.financials
+            bs    = t.balance_sheet
+            cf    = t.cashflow
+            q_fin   = t.quarterly_financials
+            q_cf    = t.quarterly_cashflow
+            hist    = t.history(period="3y")
             try:
-                sec = fetch_sec(symbol)
+                eps_hist = t.earnings_history
             except Exception:
-                sec = {"available": False, "reason": "SEC-Fetch Fehler"}
+                eps_hist = pd.DataFrame()
+            sec = {"available": False, "reason": "Nicht-US Ticker"}
+            if "." not in symbol:
+                try:
+                    sec = fetch_sec(symbol)
+                except Exception:
+                    sec = {"available": False, "reason": "SEC-Fetch Fehler"}
+            try:
+                div_hist = t.dividends
+            except Exception:
+                div_hist = pd.Series(dtype=float)
 
-        # Dividend history (for CAGR + Konsistenz)
-        try:
-            div_hist = t.dividends
-        except Exception:
-            div_hist = pd.Series(dtype=float)
-
-        return {
-            "info": info, "fin": fin, "bs": bs, "cf": cf,
-            "q_fin": q_fin, "q_cf": q_cf,
-            "hist": hist, "eps_hist": eps_hist,
-            "symbol": symbol.upper(), "sec": sec,
-            "div_hist": div_hist,
-        }
-    except Exception as exc:
-        return {"error": str(exc)}
+            return {
+                "info": info, "fin": fin, "bs": bs, "cf": cf,
+                "q_fin": q_fin, "q_cf": q_cf,
+                "hist": hist, "eps_hist": eps_hist,
+                "symbol": symbol.upper(), "sec": sec,
+                "div_hist": div_hist,
+            }
+        except Exception as exc:
+            _emsg = str(exc).lower()
+            if _attempt < 2 and any(k in _emsg for k in _rl_keywords):
+                _wait = 3 * (2 ** _attempt)   # 3s → 6s
+                time.sleep(_wait)
+                continue
+            return {"error": str(exc)}
+    return {"error": "⚠️ Yahoo Finance Rate-Limit — bitte 30 Sek. warten und erneut versuchen."}
 
 # ── Depot: leichtgewichtiger Ticker-Abruf ────────────────────────────────────
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=7200, show_spinner=False)
 def _fetch_depot_ticker(symbol: str) -> dict:
-    """Leichtgewichtiger yfinance-Abruf für Depot-Positionen (Kurs, Sektor, Dividende)."""
-    try:
-        t    = yf.Ticker(symbol)
-        info = t.info or {}
-        price = float(info.get("currentPrice") or info.get("regularMarketPrice")
-                      or info.get("previousClose") or 0)
-        _prev = float(info.get("previousClose") or price or 0)
-        _day_chg = (price - _prev) / _prev if _prev and _prev > 0 and price != _prev else 0.0
-        return {
-            "price":           price,
-            "name":            info.get("shortName") or info.get("longName") or symbol,
-            "sector":          info.get("sector") or "Unbekannt",
-            "industry":        info.get("industry") or "Unbekannt",
-            "country":         info.get("country") or "Unbekannt",
-            "currency":        info.get("currency") or "USD",
-            "div_yield":       float(info.get("dividendYield") or 0),
-            "div_rate":        float(info.get("dividendRate") or 0),
-            "week52_high":     info.get("fiftyTwoWeekHigh"),
-            "week52_low":      info.get("fiftyTwoWeekLow"),
-            "mktcap":          info.get("marketCap"),
-            "day_change_pct":  _day_chg,
-            "website":         info.get("website") or "",
-        }
-    except Exception as exc:
-        return {
-            "price": 0.0, "name": symbol, "sector": "",
-            "industry": "", "country": "", "currency": "USD",
-            "div_yield": 0.0, "div_rate": 0.0,
-            "week52_high": None, "week52_low": None, "mktcap": None,
-            "day_change_pct": 0.0, "website": "", "error": str(exc),
-        }
+    """Leichtgewichtiger yfinance-Abruf für Depot-Positionen (Kurs, Sektor, Dividende).
+    ttl=7200 (2h). Pre-Delay 0.25s verhindert Burst-Requests beim Kaltstart (27 Ticker)."""
+    _rl_kw  = ("too many requests", "rate limit", "429", "no crumb")
+    _empty  = {
+        "price": 0.0, "name": symbol, "sector": "",
+        "industry": "", "country": "", "currency": "USD",
+        "div_yield": 0.0, "div_rate": 0.0,
+        "week52_high": None, "week52_low": None, "mktcap": None,
+        "day_change_pct": 0.0, "website": "",
+    }
+    # Kleines Pre-Delay damit 27 parallel gestartete Cache-Misses nicht gleichzeitig
+    # bei Yahoo Finance ankommen → verhindert Rate-Limiting beim Kaltstart
+    time.sleep(0.25)
+    for _attempt in range(3):
+        try:
+            t    = yf.Ticker(symbol)
+            info = t.info or {}
+            price = float(info.get("currentPrice") or info.get("regularMarketPrice")
+                          or info.get("previousClose") or 0)
+            _prev = float(info.get("previousClose") or price or 0)
+            _day_chg = (price - _prev) / _prev if _prev and _prev > 0 and price != _prev else 0.0
+            return {
+                "price":           price,
+                "name":            info.get("shortName") or info.get("longName") or symbol,
+                "sector":          info.get("sector") or "",
+                "industry":        info.get("industry") or "",
+                "country":         info.get("country") or "",
+                "currency":        info.get("currency") or "USD",
+                "div_yield":       float(info.get("dividendYield") or 0),
+                "div_rate":        float(info.get("dividendRate") or 0),
+                "week52_high":     info.get("fiftyTwoWeekHigh"),
+                "week52_low":      info.get("fiftyTwoWeekLow"),
+                "mktcap":          info.get("marketCap"),
+                "day_change_pct":  _day_chg,
+                "website":         info.get("website") or "",
+            }
+        except Exception as exc:
+            _emsg = str(exc).lower()
+            if _attempt < 2 and any(k in _emsg for k in _rl_kw):
+                time.sleep(2 ** (_attempt + 1))   # 2s → 4s
+                continue
+            _empty["error"] = str(exc)
+            return _empty
+    _empty["error"] = "Rate limited"
+    return _empty
 
 
 # ── Benchmark-Daten (S&P 500 · MSCI World · NASDAQ 100) ──────────────────────
