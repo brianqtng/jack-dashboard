@@ -570,7 +570,8 @@ def _fetch_benchmark_data() -> dict:
             _h = yf.Ticker(_bm_tk).history(period="5y")
             if not _h.empty and "Close" in _h.columns:
                 _s = _h["Close"].copy()
-                _s.index = pd.to_datetime(_s.index).tz_localize(None)
+                _si = pd.to_datetime(_s.index)
+                _s.index = _si.tz_localize(None) if _si.tz is not None else _si
                 _out[_bm_name] = _s
         except Exception:
             pass
@@ -585,7 +586,8 @@ def _fetch_comparison_hist(ticker: str) -> pd.Series:
         _h = yf.Ticker(ticker.upper()).history(period="5y")
         if not _h.empty and "Close" in _h.columns:
             _s = _h["Close"].copy()
-            _s.index = pd.to_datetime(_s.index).tz_localize(None)
+            _si = pd.to_datetime(_s.index)
+            _s.index = _si.tz_localize(None) if _si.tz is not None else _si
             return _s
     except Exception:
         pass
@@ -3540,7 +3542,8 @@ def _render_benchmark_vergleich(hist_stock=None, stock_label="Aktie",
     # 1. Aktie / Depot-Linie (wenn übergeben)
     if hist_stock is not None and not hist_stock.empty and "Close" in hist_stock.columns:
         _sh = hist_stock["Close"].copy()
-        _sh.index = pd.to_datetime(_sh.index).tz_localize(None)
+        _shi = pd.to_datetime(_sh.index)
+        _sh.index = _shi.tz_localize(None) if _shi.tz is not None else _shi
         _add_line(_sh, stock_label, stock_color, "solid", 2.8)
 
     # 2. Eigene Vergleichswerte (Multiselect + freie Eingabe)
@@ -3580,7 +3583,8 @@ def _render_benchmark_vergleich(hist_stock=None, stock_label="Aktie",
         _all_mp = {}
         if hist_stock is not None and not hist_stock.empty and "Close" in hist_stock.columns:
             _s = hist_stock["Close"].copy()
-            _s.index = pd.to_datetime(_s.index).tz_localize(None)
+            _si = pd.to_datetime(_s.index)
+            _s.index = _si.tz_localize(None) if _si.tz is not None else _si
             _all_mp[stock_label] = _s
         for _elb, _eser in _extra_series.items():
             _all_mp[_elb] = _eser
