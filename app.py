@@ -530,53 +530,81 @@ def fetch(symbol: str) -> dict:
     return {"error": "⚠️ Yahoo Finance Rate-Limit — bitte 30 Sek. warten und erneut versuchen."}
 
 # ── Depot: leichtgewichtiger Ticker-Abruf ────────────────────────────────────
-@st.cache_data(ttl=7200, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
+def _fetch_depot_prices_batch(tickers: tuple) -> dict:
+    """Holt Kurse für ALLE Depot-Ticker in EINEM yf.download()-Call.
+    Vermeidet Rate-Limiting durch einzelne t.info-Abfragen.
+    Gibt {ticker: {"price": float, "prev_close": float}} zurück."""
+    if not tickers:
+        return {}
+    try:
+        _tstr = " ".join(tickers)
+        _df   = yf.download(_tstr, period="5d", auto_adjust=True,
+                            progress=False, threads=False)
+        if _df.empty:
+            return {}
+        _result = {}
+        # Einzelner Ticker → flache Spalten; mehrere Ticker → MultiIndex
+        if len(tickers) == 1:
+            _tk = tickers[0]
+            if "Close" in _df.columns:
+                _vals = _df["Close"].dropna()
+                if not _vals.empty:
+                    _p = float(_vals.iloc[-1])
+                    _pp = float(_vals.iloc[-2]) if len(_vals) >= 2 else _p
+                    _result[_tk] = {"price": _p, "prev_close": _pp}
+        else:
+            try:
+                _close = _df["Close"]
+            except KeyError:
+                return {}
+            for _tk in tickers:
+                if _tk in _close.columns:
+                    _vals = _close[_tk].dropna()
+                    if not _vals.empty:
+                        _p = float(_vals.iloc[-1])
+                        _pp = float(_vals.iloc[-2]) if len(_vals) >= 2 else _p
+                        _result[_tk] = {"price": _p, "prev_close": _pp}
+        return _result
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def _fetch_depot_ticker(symbol: str) -> dict:
-    """Leichtgewichtiger yfinance-Abruf für Depot-Positionen (Kurs, Sektor, Dividende).
-    ttl=7200 (2h). Pre-Delay 0.25s verhindert Burst-Requests beim Kaltstart (27 Ticker)."""
-    _rl_kw  = ("too many requests", "rate limit", "429", "no crumb")
-    _empty  = {
-        "price": 0.0, "name": symbol, "sector": "",
-        "industry": "", "country": "", "currency": "USD",
-        "div_yield": 0.0, "div_rate": 0.0,
-        "week52_high": None, "week52_low": None, "mktcap": None,
-        "day_change_pct": 0.0, "website": "",
+    """Metadaten für Depot-Positionen: Name, Sektor, Währung, Dividende.
+    Preise kommen separat via _fetch_depot_prices_batch() (kein Rate-Limit).
+    24h-Cache — Sektor/Währung ändern sich selten."""
+    _empty = {
+        "name": symbol, "sector": "", "industry": "", "country": "",
+        "currency": "USD", "div_yield": 0.0, "div_rate": 0.0,
+        "week52_high": None, "week52_low": None, "mktcap": None, "website": "",
     }
-    # Kleines Pre-Delay damit 27 parallel gestartete Cache-Misses nicht gleichzeitig
-    # bei Yahoo Finance ankommen → verhindert Rate-Limiting beim Kaltstart
-    time.sleep(0.25)
-    for _attempt in range(3):
-        try:
-            t    = yf.Ticker(symbol)
-            info = t.info or {}
-            price = float(info.get("currentPrice") or info.get("regularMarketPrice")
-                          or info.get("previousClose") or 0)
-            _prev = float(info.get("previousClose") or price or 0)
-            _day_chg = (price - _prev) / _prev if _prev and _prev > 0 and price != _prev else 0.0
-            return {
-                "price":           price,
-                "name":            info.get("shortName") or info.get("longName") or symbol,
-                "sector":          info.get("sector") or "",
-                "industry":        info.get("industry") or "",
-                "country":         info.get("country") or "",
-                "currency":        info.get("currency") or "USD",
-                "div_yield":       float(info.get("dividendYield") or 0),
-                "div_rate":        float(info.get("dividendRate") or 0),
-                "week52_high":     info.get("fiftyTwoWeekHigh"),
-                "week52_low":      info.get("fiftyTwoWeekLow"),
-                "mktcap":          info.get("marketCap"),
-                "day_change_pct":  _day_chg,
-                "website":         info.get("website") or "",
-            }
-        except Exception as exc:
-            _emsg = str(exc).lower()
-            if _attempt < 2 and any(k in _emsg for k in _rl_kw):
-                time.sleep(2 ** (_attempt + 1))   # 2s → 4s
-                continue
-            _empty["error"] = str(exc)
-            return _empty
-    _empty["error"] = "Rate limited"
-    return _empty
+    # fast_info: zuverlässig, kaum rate-limited (anderer Endpoint)
+    try:
+        _fi = yf.Ticker(symbol).fast_info
+        _empty["currency"] = getattr(_fi, "currency", None) or "USD"
+        _empty["mktcap"]   = getattr(_fi, "market_cap", None)
+    except Exception:
+        pass
+    # t.info: Sektor/Name/Dividenden (rate-limited, daher 24h-Cache)
+    try:
+        _info = yf.Ticker(symbol).info or {}
+        return {
+            "name":        _info.get("shortName") or _info.get("longName") or symbol,
+            "sector":      _info.get("sector") or "",
+            "industry":    _info.get("industry") or "",
+            "country":     _info.get("country") or "",
+            "currency":    _info.get("currency") or _empty["currency"],
+            "div_yield":   float(_info.get("dividendYield") or 0),
+            "div_rate":    float(_info.get("dividendRate") or 0),
+            "week52_high": _info.get("fiftyTwoWeekHigh"),
+            "week52_low":  _info.get("fiftyTwoWeekLow"),
+            "mktcap":      _info.get("marketCap"),
+            "website":     _info.get("website") or "",
+        }
+    except Exception:
+        return _empty
 
 
 # ── Benchmark-Daten (S&P 500 · MSCI World · NASDAQ 100) ──────────────────────
@@ -7876,8 +7904,23 @@ def _render_depot():
         return
 
     # ── Live-Daten für alle Positionen ────────────────────────────────────────
-    with st.spinner("Lade aktuelle Kursdaten..."):
-        _live = {p["ticker"]: _fetch_depot_ticker(p["ticker"]) for p in _positions}
+    # Preise: ein einziger yf.download()-Call für alle Ticker (Rate-Limit-sicher)
+    # Metadaten: 24h-Cache (Sektor/Währung ändern sich selten)
+    _all_tickers = tuple(p["ticker"] for p in _positions)
+    with st.spinner("Lade Kursdaten..."):
+        _batch_prices = _fetch_depot_prices_batch(_all_tickers)
+        _meta = {p["ticker"]: _fetch_depot_ticker(p["ticker"]) for p in _positions}
+
+    # Zusammenführen: Metadaten + Batch-Preis → _live dict (kompatibel mit restlichem Code)
+    _live = {}
+    for _p in _positions:
+        _tk  = _p["ticker"]
+        _m   = _meta.get(_tk, {})
+        _bp  = _batch_prices.get(_tk, {})
+        _prc = _bp.get("price") or 0.0
+        _ppc = _bp.get("prev_close") or _prc
+        _dch = (_prc - _ppc) / _ppc if _ppc > 0 and _prc != _ppc else 0.0
+        _live[_tk] = {**_m, "price": _prc, "day_change_pct": _dch}
 
     # ── Berechnungen ──────────────────────────────────────────────────────────
     # Kaufkurs ist immer in EUR (Broker-Basis).
