@@ -2931,15 +2931,19 @@ def _make_price_chart(symbol: str, hist: pd.DataFrame, m: dict) -> "go.Figure":
         fill_col  = "rgba(63,185,80,0.12)" if is_up else "rgba(218,54,51,0.12)"
         glow_col  = "#3fb950" if is_up else "#da3633"
 
-        # Glättung: 20-Tage MA
-        import numpy as np
-        ma_vals = []
-        window = 20
-        for i in range(len(prices)):
-            if i < window - 1:
-                ma_vals.append(None)
-            else:
-                ma_vals.append(float(np.mean(prices[i - window + 1: i + 1])))
+        # Moving Averages berechnen
+        def _ma(n):
+            out = []
+            for i in range(len(prices)):
+                if i < n - 1:
+                    out.append(None)
+                else:
+                    out.append(float(np.mean(prices[i - n + 1: i + 1])))
+            return out
+
+        ma20  = _ma(20)
+        ma50  = _ma(50)
+        ma200 = _ma(200)
 
         fig = go.Figure()
 
@@ -2953,12 +2957,28 @@ def _make_price_chart(symbol: str, hist: pd.DataFrame, m: dict) -> "go.Figure":
             hovertemplate="<b>%{x|%d.%m.%Y}</b><br>Kurs: %{y:.2f}<extra></extra>",
         ))
 
-        # MA-Linie
+        # MA20 (gelb, gepunktet)
         fig.add_trace(go.Scatter(
-            x=dates, y=ma_vals,
+            x=dates, y=ma20,
             line=dict(color="#f0c040", width=1.2, dash="dot"),
             name="MA20",
-            hoverinfo="skip",
+            hovertemplate="MA20: %{y:.2f}<extra></extra>",
+        ))
+
+        # MA50 (blau)
+        fig.add_trace(go.Scatter(
+            x=dates, y=ma50,
+            line=dict(color="#58a6ff", width=1.5),
+            name="MA50",
+            hovertemplate="MA50: %{y:.2f}<extra></extra>",
+        ))
+
+        # MA200 (orange-rot)
+        fig.add_trace(go.Scatter(
+            x=dates, y=ma200,
+            line=dict(color="#f78166", width=1.8),
+            name="MA200",
+            hovertemplate="MA200: %{y:.2f}<extra></extra>",
         ))
 
         # Aktueller Preis — horizontale Linie
@@ -2972,8 +2992,16 @@ def _make_price_chart(symbol: str, hist: pd.DataFrame, m: dict) -> "go.Figure":
             plot_bgcolor="#0d1117",
             font=dict(color="#8b949e", size=10),
             margin=dict(l=8, r=8, t=8, b=24),
-            height=220,
-            showlegend=False,
+            height=240,
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                x=0, y=1.0,
+                bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#8b949e", size=10),
+                itemclick=False,
+                itemdoubleclick=False,
+            ),
             hovermode="x unified",
             xaxis=dict(
                 showgrid=False,
