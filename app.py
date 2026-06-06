@@ -8564,130 +8564,210 @@ def _render_depot():
 
 
 # ── App Layout ────────────────────────────────────────────────────────────────
-hc1, hc2 = st.columns([3, 1])
-with hc1:
-    st.markdown('<p class="jack-title">🛡️ JACK – THE MOAT REAPER</p>', unsafe_allow_html=True)
-    st.markdown('<p class="jack-sub">Equity Exorcist · Daten via Yahoo Finance · Kein API Key nötig</p>', unsafe_allow_html=True)
 
+# Sidebar — Info & Kurzreferenz
 with st.sidebar:
-    st.markdown("### ⚙️ Analyse-Modus")
-    modus = st.radio("Modus wählen", [
-        "🔬 A: Einzelanalyse",
-        "⚔️ B: Battle (A vs B)",
-        "🔍 C: These-Check",
-        "📰 D: Quick News Scan",
-        "⚡ E: Ultra-Quick-Scan",
-        "🎯 F: Decision Mode",
-        "📊 Earnings-Prep",
-        "🌍 Makro-Radar",
-        "💼 G: Depot",
-    ], label_visibility="collapsed")
+    st.markdown("### 🛡️ JACK")
+    st.caption(
+        "**Eingabe-Formate:**\n"
+        "Ticker: `AAPL` · `SAP.DE`\n"
+        "ISIN: `US0378331005`\n"
+        "WKN: `865985`\n"
+        "Name: `Apple Inc.`"
+    )
     st.divider()
-    st.markdown("**Legende Modi:**")
-    st.caption("A: Vollanalyse (7 Schritte)\nB: Vergleich 2 Aktien\nC: These noch intakt?\nE: BIG FIVE Kurzcheck\nF: Ultra-Short Entscheid\nG: Depot Dashboard")
+    st.caption(
+        "**Modi:**\n"
+        "🔬 Vollanalyse (7 Schritte)\n"
+        "⚔️ Battle — 2 Aktien vergleichen\n"
+        "🔍 These-Check\n"
+        "⚡ Quick-Scan (BIG FIVE)\n"
+        "🎯 Entscheid (Buy/Hold/Sell)\n"
+        "📊 Earnings-Prep\n"
+        "🌍 Makro-Radar\n"
+        "💼 Depot-Dashboard"
+    )
     st.divider()
-    st.caption(f"Daten: Yahoo Finance\nKein API Key nötig\nCache: 1h\nStand: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+    st.caption("📡 Daten: Yahoo Finance\n🕐 Cache: 2h\n📅 " + datetime.now().strftime("%d.%m.%Y %H:%M"))
 
+# ── Header ────────────────────────────────────────────────────────────────────
+st.markdown('<p class="jack-title">🛡️ JACK – THE MOAT REAPER</p>', unsafe_allow_html=True)
+st.markdown('<p class="jack-sub">Equity Exorcist · Daten via Yahoo Finance · Kein API Key nötig</p>', unsafe_allow_html=True)
+
+# ── Modus-Navigation (Pills) ──────────────────────────────────────────────────
+_NAV_MODES = [
+    ("🔬 Analyse",   "🔬 A: Einzelanalyse"),
+    ("⚔️ Battle",    "⚔️ B: Battle (A vs B)"),
+    ("🔍 These",     "🔍 C: These-Check"),
+    ("📰 News",      "📰 D: Quick News Scan"),
+    ("⚡ Quick",     "⚡ E: Ultra-Quick-Scan"),
+    ("🎯 Entscheid", "🎯 F: Decision Mode"),
+    ("📊 Earnings",  "📊 Earnings-Prep"),
+    ("🌍 Makro",     "🌍 Makro-Radar"),
+    ("💼 Depot",     "💼 G: Depot"),
+]
+
+if "modus" not in st.session_state:
+    st.session_state.modus = "🔬 A: Einzelanalyse"
+
+_nav_cols = st.columns(len(_NAV_MODES))
+for _ni, (_nlabel, _nkey) in enumerate(_NAV_MODES):
+    if _nav_cols[_ni].button(
+        _nlabel, key="nav_" + str(_ni),
+        type="primary" if st.session_state.modus == _nkey else "secondary",
+        use_container_width=True,
+    ):
+        st.session_state.modus = _nkey
+        st.rerun()
+
+modus = st.session_state.modus
 st.markdown("---")
 
-# ── Makro-Radar (kein Ticker nötig) ──────────────────────────────────────────
+# ── Routing ───────────────────────────────────────────────────────────────────
+
+# Makro-Radar
 if "Makro" in modus:
     _render_makro_radar()
 
-# ── Depot Dashboard (G) ───────────────────────────────────────────────────────
+# Depot Dashboard
 elif "Depot" in modus:
     _render_depot()
 
-# ── Battle Mode (B) ───────────────────────────────────────────────────────────
+# Battle Mode
 elif "Battle" in modus:
+    st.markdown(
+        "<div style='background:#161b22;border:1px solid #30363d;border-radius:10px;"
+        "padding:14px 20px;margin-bottom:16px;'>"
+        "<span style='font-size:20px;'>⚔️</span>"
+        " <strong style='color:#e6edf3;font-size:15px;'>Battle — Zwei Aktien direkt vergleichen</strong>"
+        "<div style='color:#8b949e;font-size:12px;margin-top:4px;'>"
+        "Ticker, ISIN, WKN oder Firmenname eingeben</div></div>",
+        unsafe_allow_html=True,
+    )
     ca, cb = st.columns(2)
-    ta = ca.text_input("Ticker A", placeholder="AAPL", key="ta").strip().upper()
-    tb = cb.text_input("Ticker B", placeholder="MSFT", key="tb").strip().upper()
+    ta = ca.text_input("Ticker A", placeholder="z.B. AAPL", key="ta").strip().upper()
+    tb = cb.text_input("Ticker B", placeholder="z.B. MSFT", key="tb").strip().upper()
     if st.button("⚔️ Battle starten", type="primary", use_container_width=True) and ta and tb:
-        with st.spinner(f"Analysiere {ta} vs {tb}..."):
-            raw_a = fetch(ta); raw_b = fetch(tb)
+        with st.spinner("Analysiere " + ta + " vs " + tb + "..."):
+            raw_a = fetch(ta)
+            raw_b = fetch(tb)
         if "error" in raw_a:
-            st.error(f"{ta}: {raw_a['error']}")
+            st.error(ta + ": " + raw_a["error"])
         elif "error" in raw_b:
-            st.error(f"{tb}: {raw_b['error']}")
+            st.error(tb + ": " + raw_b["error"])
         else:
             ma = calc_metrics(raw_a); ja = calc_jack(ma)
             mb = calc_metrics(raw_b); jb = calc_jack(mb)
             _render_battle(ta, ma, ja, tb, mb, jb)
             st.markdown("---")
             st.markdown("### Einzelanalysen")
-            tab_a, tab_b = st.tabs([f"🔬 {ta} — Vollanalyse", f"🔬 {tb} — Vollanalyse"])
+            tab_a, tab_b = st.tabs(["🔬 " + ta + " — Vollanalyse", "🔬 " + tb + " — Vollanalyse"])
             with tab_a:
                 render(ta, ma, ja, raw_a.get("hist", pd.DataFrame()), raw_a.get("eps_hist", pd.DataFrame()))
             with tab_b:
                 render(tb, mb, jb, raw_b.get("hist", pd.DataFrame()), raw_b.get("eps_hist", pd.DataFrame()))
 
-# ── Modi C / E / F / Earnings-Prep — Ticker-basiert ──────────────────────────
+# Ticker-basierte Modi: A / C / D / E / F / Earnings
 else:
-    _ticker_placeholder = {
-        "These": "Ticker für These-Check (z.B. NVDA)",
-        "Quick": "Ticker für Quick-Scan (z.B. AAPL)",
-        "Decision": "Ticker für Decision Mode (z.B. META)",
-        "Earnings": "Ticker für Earnings-Prep (z.B. MSFT)",
+    # Modus-Header-Card
+    _MODE_META = {
+        "Einzelanalyse": ("🔬", "Vollanalyse",  "7 Schritte · K-Kriterien · Reaper Score · DCF · Moat-Analyse"),
+        "These":         ("🔍", "These-Check",  "Ist die ursprüngliche Investment-These noch intakt?"),
+        "News":          ("📰", "News Scan",    "Wichtigste Meldungen · Kursreaktion · Signal oder Rauschen"),
+        "Quick":         ("⚡", "Quick-Scan",   "BIG FIVE Kurzcheck — fünf Kriterien in 60 Sekunden"),
+        "Decision":      ("🎯", "Entscheid",    "Strukturierter Buy / Hold / Sell — JACK Decision Framework"),
+        "Earnings":      ("📊", "Earnings",     "Earnings-Vorbereitung · Konsensus · Überraschungspotenzial"),
     }
-    placeholder = next((v for k, v in _ticker_placeholder.items() if k in modus),
-                       "z.B.  AAPL  ·  NVDA  ·  SAP.DE  ·  ASML.AS")
+    _micon, _mtitle, _mdesc = next(
+        (v for k, v in _MODE_META.items() if k in modus),
+        ("🔬", "Analyse", ""),
+    )
+    st.markdown(
+        "<div style='background:#161b22;border:1px solid #30363d;border-radius:10px;"
+        "padding:14px 20px;margin-bottom:4px;display:flex;align-items:center;gap:14px;'>"
+        "<span style='font-size:26px;line-height:1;'>" + _micon + "</span>"
+        "<div>"
+        "<div style='font-weight:700;color:#e6edf3;font-size:16px;'>" + _mtitle + "</div>"
+        "<div style='color:#8b949e;font-size:12px;margin-top:2px;'>" + _mdesc + "</div>"
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    # Prominente Suchleiste
+    _PLACEHOLDERS = {
+        "These":    "Ticker für These-Check — z.B. NVDA, ASML.AS",
+        "News":     "Ticker für News-Scan — z.B. TSLA, META",
+        "Quick":    "Ticker für Quick-Scan — z.B. AAPL, SAP.DE",
+        "Decision": "Ticker für Entscheid — z.B. META, BRK-B",
+        "Earnings": "Ticker für Earnings-Prep — z.B. MSFT, AMZN",
+    }
+    _ph = next((v for k, v in _PLACEHOLDERS.items() if k in modus),
+               "AAPL  ·  SAP.DE  ·  US0378331005  ·  865985  ·  Apple Inc.")
 
     ticker_input = st.text_input(
-        "Ticker eingeben",
-        placeholder="AAPL · SAP.DE · US0378331005 · 865985 · Apple Inc.",
-        label_visibility="collapsed",
+        "🔍  Ticker, ISIN, WKN oder Firmenname",
+        placeholder=_ph,
+        key="main_ticker_input",
     ).strip()
 
     if ticker_input:
-        # ── Smart Resolver: Ticker / ISIN / WKN / Firmenname ─────────────────
         with st.spinner("Suche Ticker..."):
             resolved, resolve_label, resolve_err = resolve_input(ticker_input)
 
         if resolve_err:
-            st.error(f"❌ {resolve_err}")
+            st.error("❌ " + resolve_err)
             st.info("Eingabe-Formate: Ticker (AAPL), ISIN (US0378331005), WKN (865985), Firmenname (Apple)")
             resolved = None
 
         if resolved:
             if resolve_label:
-                st.caption(f"🔍 Aufgelöst: {resolve_label}")
-            with st.spinner(f"Lade Daten für {resolved} von Yahoo Finance..."):
+                st.caption("🔍 Aufgelöst: " + resolve_label)
+            with st.spinner("Lade Daten für " + resolved + " von Yahoo Finance..."):
                 raw = fetch(resolved)
-            ticker_input = resolved  # verwende aufgelösten Ticker weiterhin
+            ticker_input = resolved
 
         if resolved and "error" in raw:
-            st.error(f"❌ {raw['error']}")
+            st.error("❌ " + raw["error"])
             st.info("Tipp: US-Aktien ohne Kürzel (AAPL), deutsche Aktien mit .DE (SAP.DE), Schweizer mit .SW (NESN.SW)")
             resolved = None
 
         if resolved and "error" not in raw:
-            m = calc_metrics(raw)
-            j = calc_jack(m)
+            m        = calc_metrics(raw)
+            j        = calc_jack(m)
             hist     = raw.get("hist", pd.DataFrame())
             eps_hist = raw.get("eps_hist", pd.DataFrame())
 
-            if "Diese" in modus:            # C: These-Check
+            if "Diese" in modus:
                 _render_these_check(m, j)
-            elif "News" in modus:           # D: Quick News Scan
+            elif "News" in modus:
                 _render_quick_news_scan(m, j)
-            elif "Quick" in modus:          # E: Ultra-Quick-Scan
+            elif "Quick" in modus:
                 _render_ultra_quick_scan(m, j)
-            elif "Decision" in modus:       # F: Decision Mode
+            elif "Decision" in modus:
                 _render_decision_mode(m, j)
-            elif "Earnings" in modus:       # Earnings-Prep
+            elif "Earnings" in modus:
                 _render_earnings_prep(m, j, eps_hist)
-            else:                           # A: Einzelanalyse (Standard)
+            else:
                 render(ticker_input, m, j, hist, eps_hist)
+
     else:
-        st.markdown("""
-<div class="welcome">
-  <div style="font-size:3em;margin-bottom:12px;">🛡️</div>
-  <h3 style="color:#e94560;margin:0 0 8px 0;">JACK ist bereit</h3>
-  <p>Ticker eingeben und Enter drücken — kein API Key, kein Login nötig.</p>
-  <p style="font-size:.83em;color:#6e7681;">
-    <code>NVDA</code> &nbsp;·&nbsp; <code>AAPL</code> &nbsp;·&nbsp;
-    <code>SAP.DE</code> &nbsp;·&nbsp; <code>ASML.AS</code> &nbsp;·&nbsp;
-    <code>META</code> &nbsp;·&nbsp; <code>BRK-B</code>
-  </p>
-</div>""", unsafe_allow_html=True)
+        # Leer-Zustand: Beispiel-Chips
+        st.markdown(
+            "<div style='margin-top:28px;text-align:center;padding:36px 20px;"
+            "background:#161b22;border:1px solid #30363d;border-radius:12px;'>"
+            "<div style='font-size:2.4em;margin-bottom:10px;'>🛡️</div>"
+            "<div style='font-weight:700;color:#e6edf3;font-size:17px;margin-bottom:6px;'>"
+            "JACK ist bereit</div>"
+            "<div style='color:#8b949e;font-size:13px;margin-bottom:20px;'>"
+            "Ticker, ISIN, WKN oder Firmenname oben eingeben · Enter drücken</div>"
+            "<div style='display:flex;flex-wrap:wrap;gap:8px;justify-content:center;'>"
+            + "".join(
+                "<span style='background:#21262d;border:1px solid #30363d;border-radius:6px;"
+                "padding:4px 12px;font-size:12px;color:#8b949e;font-family:monospace;'>"
+                + _ex + "</span>"
+                for _ex in ["NVDA", "AAPL", "SAP.DE", "ASML.AS", "META",
+                            "BRK-B", "MSFT", "US0378331005", "865985"]
+            )
+            + "</div></div>",
+            unsafe_allow_html=True,
+        )
