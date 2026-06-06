@@ -2952,13 +2952,12 @@ def _make_price_chart(symbol: str, hist: pd.DataFrame, m: dict) -> "go.Figure":
         row_heights = [0.58, 0.18, 0.24] if has_vol else [0.72, 0, 0.28]
         rows = 3 if has_vol else 2
 
-        _specs = [[{"type": "scatter"}]] * rows
         fig = make_subplots(
             rows=rows, cols=1,
             shared_xaxes=True,
             vertical_spacing=0.03,
             row_heights=row_heights[:rows],
-            specs=_specs,
+            specs=[[{"type": "xy"}] for _ in range(rows)],
         )
 
         # ── Zeile 1: Kurs + MAs ───────────────────────────────────────────────
