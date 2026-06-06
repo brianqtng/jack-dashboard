@@ -2910,114 +2910,163 @@ def _render_dividenden_check(m: dict):
 
 # ── COCKPIT: Drama-Chart (Plotly) ─────────────────────────────────────────────
 def _make_price_chart(symbol: str, hist: pd.DataFrame, m: dict) -> "go.Figure":
-    """Dramatischer Kurs-Chart im Bloomberg-Terminal-Stil."""
+    """Kurs-Chart mit MA20/50/200 · Volumen · MACD (3 Subplots)."""
     if hist is None or hist.empty or "Close" not in hist.columns:
         return None
     try:
-        df = hist[["Close"]].dropna().copy()
+        _cols = [c for c in ["Close", "Volume"] if c in hist.columns]
+        df = hist[_cols].copy()
         if hasattr(df.index, "tz") and df.index.tz is not None:
             df.index = df.index.tz_localize(None)
-        if len(df) < 5:
+        df = df[df["Close"].notna()]
+        if len(df) < 10:
             return None
 
-        prices   = df["Close"].tolist()
-        dates    = df.index.tolist()
-        first_p  = prices[0]
-        last_p   = prices[-1]
-        is_up    = last_p >= first_p
+        prices = df["Close"]
+        dates  = df.index.tolist()
+        last_p = float(prices.iloc[-1])
+        is_up  = float(prices.iloc[-1]) >= float(prices.iloc[0])
 
-        # Farben: grün wenn Kurs gestiegen, rot wenn gefallen
-        line_col  = "#3fb950" if is_up else "#da3633"
-        fill_col  = "rgba(63,185,80,0.12)" if is_up else "rgba(218,54,51,0.12)"
-        glow_col  = "#3fb950" if is_up else "#da3633"
+        line_col = "#3fb950" if is_up else "#da3633"
+        fill_col = "rgba(63,185,80,0.10)" if is_up else "rgba(218,54,51,0.10)"
 
-        # Moving Averages berechnen
-        def _ma(n):
-            out = []
-            for i in range(len(prices)):
-                if i < n - 1:
-                    out.append(None)
-                else:
-                    out.append(float(np.mean(prices[i - n + 1: i + 1])))
-            return out
+        # ── Moving Averages (SMA) ─────────────────────────────────────────────
+        def _sma(n):
+            s = prices.rolling(n).mean()
+            return [float(v) if not pd.isna(v) else None for v in s]
 
-        ma20  = _ma(20)
-        ma50  = _ma(50)
-        ma200 = _ma(200)
+        ma20  = _sma(20)
+        ma50  = _sma(50)
+        ma200 = _sma(200)
 
-        fig = go.Figure()
+        # ── MACD (EMA12 − EMA26, Signal EMA9) ────────────────────────────────
+        ema12    = prices.ewm(span=12, adjust=False).mean()
+        ema26    = prices.ewm(span=26, adjust=False).mean()
+        macd_l   = ema12 - ema26
+        signal_l = macd_l.ewm(span=9, adjust=False).mean()
+        hist_l   = macd_l - signal_l
+        macd_col = ["#3fb950" if v >= 0 else "#da3633" for v in hist_l]
 
-        # Fläche (filled area)
-        fig.add_trace(go.Scatter(
-            x=dates, y=prices,
-            fill="tozeroy",
-            fillcolor=fill_col,
-            line=dict(color=line_col, width=2),
-            name=symbol,
-            hovertemplate="<b>%{x|%d.%m.%Y}</b><br>Kurs: %{y:.2f}<extra></extra>",
-        ))
+        # ── Layout: 3 Zeilen (Kurs 58% · Volumen 18% · MACD 24%) ─────────────
+        has_vol = "Volume" in df.columns and df["Volume"].sum() > 0
+        row_heights = [0.58, 0.18, 0.24] if has_vol else [0.72, 0, 0.28]
+        rows = 3 if has_vol else 2
 
-        # MA20 (gelb, gepunktet)
-        fig.add_trace(go.Scatter(
-            x=dates, y=ma20,
-            line=dict(color="#f0c040", width=1.2, dash="dot"),
-            name="MA20",
-            hovertemplate="MA20: %{y:.2f}<extra></extra>",
-        ))
-
-        # MA50 (blau)
-        fig.add_trace(go.Scatter(
-            x=dates, y=ma50,
-            line=dict(color="#58a6ff", width=1.5),
-            name="MA50",
-            hovertemplate="MA50: %{y:.2f}<extra></extra>",
-        ))
-
-        # MA200 (orange-rot)
-        fig.add_trace(go.Scatter(
-            x=dates, y=ma200,
-            line=dict(color="#f78166", width=1.8),
-            name="MA200",
-            hovertemplate="MA200: %{y:.2f}<extra></extra>",
-        ))
-
-        # Aktueller Preis — horizontale Linie
-        fig.add_hline(
-            y=last_p, line_dash="dot",
-            line_color=glow_col, line_width=1, opacity=0.5
+        _specs = [[{"type": "scatter"}]] * rows
+        fig = make_subplots(
+            rows=rows, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            row_heights=row_heights[:rows],
+            specs=_specs,
         )
 
+        # ── Zeile 1: Kurs + MAs ───────────────────────────────────────────────
+        fig.add_trace(go.Scatter(
+            x=dates, y=prices.tolist(),
+            fill="tozeroy", fillcolor=fill_col,
+            line=dict(color=line_col, width=2),
+            name=symbol,
+            hovertemplate="Kurs: %{y:.2f}<extra></extra>",
+        ), row=1, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=dates, y=ma20,
+            line=dict(color="#f0c040", width=1.1, dash="dot"),
+            name="MA20", hovertemplate="MA20: %{y:.2f}<extra></extra>",
+        ), row=1, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=dates, y=ma50,
+            line=dict(color="#58a6ff", width=1.4),
+            name="MA50", hovertemplate="MA50: %{y:.2f}<extra></extra>",
+        ), row=1, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=dates, y=ma200,
+            line=dict(color="#f78166", width=1.7),
+            name="MA200", hovertemplate="MA200: %{y:.2f}<extra></extra>",
+        ), row=1, col=1)
+
+        # Aktuelle-Preis-Linie
+        fig.add_hline(y=last_p, line_dash="dot",
+                      line_color=line_col, line_width=1, opacity=0.4, row=1, col=1)
+
+        # ── Zeile 2: Volumen (falls vorhanden) ────────────────────────────────
+        _macd_row = rows   # MACD immer letzte Zeile
+        if has_vol:
+            vol = df["Volume"].tolist()
+            vol_col = [
+                "#3fb95066" if float(prices.iloc[i]) >= float(prices.iloc[i - 1])
+                else "#da363366"
+                for i in range(len(prices))
+            ]
+            fig.add_trace(go.Bar(
+                x=dates, y=vol,
+                marker_color=vol_col,
+                name="Volumen",
+                hovertemplate="Vol: %{y:,.0f}<extra></extra>",
+            ), row=2, col=1)
+
+        # ── Letzte Zeile: MACD ────────────────────────────────────────────────
+        fig.add_trace(go.Bar(
+            x=dates, y=hist_l.tolist(),
+            marker_color=macd_col,
+            name="MACD Hist.",
+            hovertemplate="Hist: %{y:.3f}<extra></extra>",
+        ), row=_macd_row, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=dates, y=macd_l.tolist(),
+            line=dict(color="#58a6ff", width=1.4),
+            name="MACD", hovertemplate="MACD: %{y:.3f}<extra></extra>",
+        ), row=_macd_row, col=1)
+
+        fig.add_trace(go.Scatter(
+            x=dates, y=signal_l.tolist(),
+            line=dict(color="#f0c040", width=1.2, dash="dot"),
+            name="Signal", hovertemplate="Signal: %{y:.3f}<extra></extra>",
+        ), row=_macd_row, col=1)
+
+        fig.add_hline(y=0, line_color="#30363d", line_width=1,
+                      row=_macd_row, col=1)
+
+        # ── Globales Layout ───────────────────────────────────────────────────
+        _ax = dict(
+            showgrid=True, gridcolor="#1c2128", gridwidth=1,
+            showline=False, zeroline=False,
+            tickfont=dict(color="#8b949e", size=9),
+        )
         fig.update_layout(
             paper_bgcolor="#0d1117",
             plot_bgcolor="#0d1117",
             font=dict(color="#8b949e", size=10),
-            margin=dict(l=8, r=8, t=8, b=24),
-            height=240,
+            margin=dict(l=8, r=8, t=28, b=8),
+            height=480,
             showlegend=True,
             legend=dict(
-                orientation="h",
-                x=0, y=1.0,
+                orientation="h", x=0, y=1.02,
                 bgcolor="rgba(0,0,0,0)",
                 font=dict(color="#8b949e", size=10),
-                itemclick=False,
-                itemdoubleclick=False,
+                itemclick=False, itemdoubleclick=False,
             ),
             hovermode="x unified",
-            xaxis=dict(
-                showgrid=False,
-                showline=False,
-                tickfont=dict(color="#8b949e", size=9),
-                tickformat="%b %y",
-            ),
-            yaxis=dict(
-                showgrid=True,
-                gridcolor="#161b22",
-                gridwidth=1,
-                showline=False,
-                tickfont=dict(color="#8b949e", size=9),
-                side="right",
-            ),
+            barmode="relative",
         )
+        # X-Achse (ganz unten sichtbar)
+        fig.update_xaxes(
+            showgrid=False, showline=False,
+            tickfont=dict(color="#8b949e", size=9),
+            tickformat="%b %y",
+        )
+        # Y-Achsen rechts
+        fig.update_yaxes(**_ax)
+        fig.update_yaxes(side="right", row=1, col=1)
+        fig.update_yaxes(side="right", showticklabels=False, row=2, col=1)
+        fig.update_yaxes(side="right", row=_macd_row, col=1,
+                         title_text="MACD",
+                         title_font=dict(color="#8b949e", size=9))
+
         return fig
     except Exception:
         return None
